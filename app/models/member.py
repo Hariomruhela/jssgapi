@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+import uuid
+from datetime import date, datetime
+from typing import TYPE_CHECKING
+
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.constants import MemberStatus
+from app.models.base import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
+
+if TYPE_CHECKING:
+    from app.models.family import FamilyMember
+    from app.models.group import SocialGroup
+    from app.models.location import Location
+    from app.models.professional import ProfessionalInformation
+    from app.models.user import User
+
+
+class Member(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "members"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_members_user_id"),)
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("social_groups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    location_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("locations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    first_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    middle_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    last_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
+    blood_group: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    profile_photo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    contact_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    contact_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    address_line: Mapped[str | None] = mapped_column(Text, nullable=True)
+    occupation_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    membership_number: Mapped[str | None] = mapped_column(
+        String(50), unique=True, nullable=True, index=True
+    )
+    membership_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=MemberStatus.PENDING.value, index=True
+    )
+    joined_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_profile_complete: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
+    user: Mapped[User] = relationship(back_populates="member", lazy="selectin")
+    group: Mapped[SocialGroup | None] = relationship(back_populates="members")
+    location: Mapped[Location | None] = relationship(back_populates="members")
+    family_members: Mapped[list[FamilyMember]] = relationship(
+        back_populates="member", lazy="selectin"
+    )
+    professional_info: Mapped[list[ProfessionalInformation]] = relationship(
+        back_populates="member", lazy="selectin", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return f"<Member {self.first_name} {self.last_name}>"

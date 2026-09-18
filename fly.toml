@@ -1,0 +1,51 @@
+app = "jssg-api"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[primary_region]
+  # set via: fly launch --region <region>, e.g. "del" (Delhi) or "bom" (Mumbai)
+
+[[services]]
+  internal_port = 8000
+  protocol = "tcp"
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 250
+    soft_limit = 200
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [services.http_checks]
+    path = "/health"
+    method = "GET"
+    timeout = 3000
+    interval = 30000
+
+[[metrics]]
+  port = 9091
+  path = "/metrics"
+
+[env]
+  APP_ENV = "production"
+  APP_DEBUG = "false"
+  APP_HOST = "0.0.0.0"
+  APP_PORT = "8000"
+  # Replace "prod-internal" with the name of your Fly.io Postgres cluster (fly postgres create)
+  DATABASE_URL = "postgresql+asyncpg://jssg:${DATABASE_PASSWORD}@jssg-db.internal:5432/jssg_db"
+  # Replace with your Fly.io Redis Upstash / internal redis URL
+  REDIS_URL = "redis://jssg-redis.internal:6379/0"
+
+[mounts]
+  source = "jssg_storage"
+  destination = "/app/storage"
+
+# Do NOT put secrets here. Use:
+#   fly secrets set JWT_SECRET=... DATABASE_PASSWORD=... CLOUDFLARE_R2_ACCESS_KEY=...
