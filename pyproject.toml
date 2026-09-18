@@ -4,6 +4,27 @@ version = "1.0.0"
 description = "Centralized Jain Community Digital Platform - backend"
 requires-python = ">=3.11"
 
+dependencies = [
+    "fastapi==0.115.12",
+    "uvicorn[standard]==0.34.2",
+    "pydantic==2.11.3",
+    "pydantic-settings==2.9.1",
+    "sqlalchemy==2.0.41",
+    "asyncpg==0.30.0",
+    "psycopg2-binary==2.9.10",
+    "alembic==1.15.2",
+    "python-jose[cryptography]==3.4.0",
+    "bcrypt==4.3.0",
+    "python-multipart==0.0.20",
+    "redis[hiredis]==5.2.1",
+    "httpx==0.28.1",
+    "python-dotenv==1.1.0",
+    "pyotp==2.9.0",
+    "boto3==1.38.31",
+    "firebase-admin==6.9.0",
+    "structlog==25.4.0",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
