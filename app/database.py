@@ -18,11 +18,20 @@ settings = get_settings()
 # Safe startup diagnostics -- never logs the URL, hostname, or credentials.
 _split = urlsplit(settings.database_url)
 _host = (_split.hostname or "").lower()
+
 _looks_unreachable = (
     not _host
-    or _host in {"localhost", "127.0.0.1", "::1", "db", "postgres", "jssg-db"}
+    or _host in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "db",
+        "postgres",
+        "jssg-db",
+    }
     or _host.endswith((".internal", ".local"))
 )
+
 logging.getLogger(__name__).warning(
     "database config: env_var_set=%s scheme=%s driver=asyncpg "
     "hostname_present=%s database_present=%s looks_unreachable=%s",
@@ -36,6 +45,9 @@ logging.getLogger(__name__).warning(
 engine = create_async_engine(
     settings.database_url,
     echo=settings.database_echo,
+    connect_args={
+        "ssl": "require",
+    },
     pool_size=20,
     max_overflow=10,
     pool_pre_ping=True,
