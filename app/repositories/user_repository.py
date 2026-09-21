@@ -33,6 +33,12 @@ class UserRepository(BaseRepository[User]):
         )
         return result.scalar_one_or_none()
 
+    async def get_active_by_phone(self, phone: str) -> User | None:
+        result = await self.session.execute(
+            select(User).where(User.phone_number == phone, User.is_active.is_(True))
+        )
+        return result.scalar_one_or_none()
+
     async def assign_role(self, user: User, role_id: uuid.UUID) -> User:
         user.role_id = role_id
         await self.session.flush()

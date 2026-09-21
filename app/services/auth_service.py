@@ -14,6 +14,7 @@ from app.core.constants import AuditAction, MemberStatus, RoleName
 from app.core.exceptions import (
     AlreadyExistsException,
     BadRequestException,
+    ForbiddenException,
     NotFoundException,
     UnauthorizedException,
 )
@@ -47,28 +48,26 @@ class AuthService:
         self,
         *,
         full_name: str,
-        email: str,
+        email: str | None,
         password: str,
-        phone_number: str | None = None,
+        phone_number: str,
+        role: str | None = None,
         ip_address: str | None = None,
         user_agent: str | None = None,
     ) -> dict:
-        email = email.strip().lower()
-        existing = await self.users.get_by_email(email)
-        if existing:
+        full_name = full_name.strip()
+        if not full_name:
+            raise BadRequestException("Full name cannot be empty")
+        email = email.strip().lower() if email else None
+        if email and await self.users.get_by_email(email):
             raise AlreadyExistsException("An account with this email already exists")
-        phone_normalized = (
-            normalize_phone_number(phone_number) if phone_number else None
-        )
-        if phone_normalized and await self.users.get_by_phone(phone_normalized):
+        phone_normalized = normalize_phone_number(phone_number)
+        if await self.users.get_by_phone(phone_normalized):
             raise AlreadyExistsException("An account with this phone number exists")
 
-        role_result = await self.session.execute(
-            select(Role).where(Role.name == RoleName.MEMBER.value)
-        )
-        member_role = role_result.scalar_one_or_none()
-        if member_role is None:
-            raise BadRequestException("MEMBER role is not configured yet")
+        role_row = await self._resolve_registration_role(role)
+        if role_row is None:
+            raise BadRequestException("Role is not configured yet")
 
         user = await self.users.create(
             email=email,
@@ -76,7 +75,7 @@ class AuthService:
             phone_number=phone_normalized,
             password_hash=hash_password(password),
             is_active=True,
-            role_id=member_role.id,
+            role_id=role_row.id,
         )
 
         name_parts = full_name.strip().split(maxsplit=1)
@@ -102,17 +101,48 @@ class AuthService:
 
         return await self._issue_tokens(user, ip_address, user_agent)
 
+    async def _resolve_registration_role(self, role: str | None) -> Role:
+        if role is None or not role.strip():
+            role_name = RoleName.MEMBER.value
+        else:
+            candidate = role.strip().upper()
+            if candidate not in (RoleName.MEMBER.value, RoleName.ADMIN.value):
+                raise BadRequestException(
+                    "Invalid role. Allowed roles: MEMBER, ADMIN"
+                )
+            role_name = candidate
+        role_result = await self.session.execute(
+            select(Role).where(Role.name == role_name)
+        )
+        role_row = role_result.scalar_one_or_none()
+        if role_row is None:
+            raise BadRequestException(f"{role_name} role is not configured yet")
+        return role_row
+
     async def login(
         self,
         *,
-        email: str,
+        email: str | None = None,
+        phone_number: str | None = None,
         password: str,
         ip_address: str | None = None,
         user_agent: str | None = None,
     ) -> dict:
-        user = await self.users.get_active_by_email(email.strip().lower())
+        if not email and not phone_number:
+            raise UnauthorizedException("Invalid email or phone number or password")
+
+        if phone_number:
+            user = await self.users.get_active_by_phone(
+                normalize_phone_number(phone_number)
+            )
+            credentials = "Invalid phone number or password"
+        else:
+            assert email is not None
+            user = await self.users.get_active_by_email(email.strip().lower())
+            credentials = "Invalid email or password"
+
         if user is None or not verify_password(password, user.password_hash):
-            raise UnauthorizedException("Invalid email or password")
+            raise UnauthorizedException(credentials)
 
         user.last_login_at = datetime.now(UTC)
         await self.session.flush()
@@ -124,6 +154,45 @@ class AuthService:
             user_agent=user_agent,
         )
         return await self._issue_tokens(user, ip_address, user_agent)
+
+    async def oauth2_admin_token(
+        self,
+        *,
+        username: str,
+        password: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> dict:
+        """OAuth2 password-flow token endpoint used by Swagger's Authorize.
+
+        username is treated as the ADMIN account's phone number. Only ADMIN
+        accounts are allowed to authenticate through this flow.
+        """
+        user = await self.users.get_active_by_phone(
+            normalize_phone_number(username)
+        )
+        if user is None or not verify_password(password, user.password_hash):
+            raise UnauthorizedException("Invalid phone number or password")
+
+        if user.role is None or user.role.name != RoleName.ADMIN.value:
+            raise ForbiddenException(
+                "Only ADMIN accounts can authenticate for Swagger access"
+            )
+
+        user.last_login_at = datetime.now(UTC)
+        await self.audit.log(
+            AuditAction.LOGIN,
+            user_id=user.id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        await self.session.flush()
+        await self.session.refresh(user)
+
+        return {
+            "access_token": create_access_token(subject=str(user.id)),
+            "token_type": "bearer",
+        }
 
     async def request_otp(
         self,
@@ -335,6 +404,39 @@ class AuthService:
             entity_id=user.id,
         )
         await self.session.flush()
+
+    async def forgot_password(
+        self,
+        *,
+        phone_number: str,
+        new_password: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> User:
+        """Reset a user's password by phone number.
+
+        DEV/TEST ONLY: this endpoint performs NO ownership verification
+        (no OTP, SMS, email, or token). Anyone who knows another user's
+        phone number could change that user's password. It is intentionally
+        unsecured for development/testing and is NOT suitable for production.
+        """
+        normalized = normalize_phone_number(phone_number)
+        user = await self.users.get_by_phone(normalized)
+        if user is None:
+            raise NotFoundException("User")
+
+        user.password_hash = hash_password(new_password)
+        await self.audit.log(
+            AuditAction.PASSWORD_CHANGE,
+            user_id=user.id,
+            entity_type="user",
+            entity_id=user.id,
+            details={"phone": self._mask_phone(normalized)},
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        await self.session.flush()
+        return user
 
     async def _issue_tokens(
         self,

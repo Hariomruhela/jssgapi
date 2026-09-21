@@ -4,11 +4,22 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
+from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 
 from app.config import get_settings
 
 settings = get_settings()
+
+bearer_scheme = OAuth2PasswordBearer(
+    tokenUrl="/api/v1/auth/token",
+    auto_error=False,
+    description=(
+        "OAuth2 password flow. Use an ADMIN account: username = phone "
+        "number, password = account password. POST /api/v1/auth/token is "
+        "called automatically by Swagger."
+    ),
+)
 
 
 def hash_password(password: str) -> str:

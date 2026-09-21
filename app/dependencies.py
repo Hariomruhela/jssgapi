@@ -3,12 +3,13 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.jwt import decode_access_token
 from app.core.permissions import require_permission as check_permission
+from app.core.security import bearer_scheme
 from app.database import get_db
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
@@ -17,17 +18,16 @@ settings = get_settings()
 
 
 async def get_current_user(
-    authorization: Annotated[str | None, Header()] = None,
     db: AsyncSession = Depends(get_db),
+    credentials: Annotated[str | None, Depends(bearer_scheme)] = None,
 ) -> User:
-    if not authorization or not authorization.startswith("Bearer "):
+    if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = authorization.removeprefix("Bearer ").strip()
-    payload = decode_access_token(token)
+    payload = decode_access_token(credentials)
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -55,13 +55,12 @@ async def get_current_user(
 
 
 async def get_optional_user(
-    authorization: Annotated[str | None, Header()] = None,
     db: AsyncSession = Depends(get_db),
+    credentials: Annotated[str | None, Depends(bearer_scheme)] = None,
 ) -> User | None:
-    if not authorization or not authorization.startswith("Bearer "):
+    if credentials is None:
         return None
-    token = authorization.removeprefix("Bearer ").strip()
-    payload = decode_access_token(token)
+    payload = decode_access_token(credentials)
     if payload is None:
         return None
     user_id = payload.get("sub")

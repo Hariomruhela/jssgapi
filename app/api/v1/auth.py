@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.security import OAuth2PasswordRequestForm
 
 from app.core.exceptions import BadRequestException
 from app.core.responses import ok
@@ -8,8 +11,10 @@ from app.dependencies import CurrentUser, DBSession
 from app.schemas.auth import (
     AuthResponse,
     ChangePasswordRequest,
+    ForgotPasswordRequest,
     LoginRequest,
     LogoutRequest,
+    OAuth2TokenResponse,
     OtpRequest,
     OtpVerifyRequest,
     RefreshRequest,
@@ -27,15 +32,14 @@ def _request_context(request: Request) -> tuple[str | None, str | None]:
     return ip, ua
 
 
-@router.post("/register", response_model=AuthResponse)
-async def register(body: RegisterRequest, request: Request, db: DBSession):
+@router.post("/login", response_model=AuthResponse)
+async def login(body: LoginRequest, request: Request, db: DBSession):
     ip, ua = _request_context(request)
     service = AuthService(db)
-    result = await service.register(
-        full_name=body.full_name,
+    result = await service.login(
         email=body.email,
-        password=body.password,
         phone_number=body.phone_number,
+        password=body.password,
         ip_address=ip,
         user_agent=ua,
     )
@@ -45,12 +49,43 @@ async def register(body: RegisterRequest, request: Request, db: DBSession):
     )
 
 
-@router.post("/login", response_model=AuthResponse)
-async def login(body: LoginRequest, request: Request, db: DBSession):
+@router.post(
+    "/token",
+    response_model=OAuth2TokenResponse,
+    summary="OAuth2 token endpoint (Swagger Authorize)",
+)
+async def oauth2_token(
+    form: Annotated[OAuth2PasswordRequestForm, Depends()],
+    request: Request,
+    db: DBSession,
+):
+    """OAuth2 password-flow token endpoint used by Swagger's Authorize dialog.
+
+    Accepts `application/x-www-form-urlencoded` data where `username` is the
+    ADMIN account's phone number and `password` is the account password.
+    Only ADMIN accounts are accepted.
+    """
+    ip, ua = _request_context(request)
+    return await AuthService(db).oauth2_admin_token(
+        username=form.username,
+        password=form.password,
+        ip_address=ip,
+        user_agent=ua,
+    )
+
+
+@router.post("/register", response_model=AuthResponse)
+async def register(body: RegisterRequest, request: Request, db: DBSession):
     ip, ua = _request_context(request)
     service = AuthService(db)
-    result = await service.login(
-        email=body.email, password=body.password, ip_address=ip, user_agent=ua
+    result = await service.register(
+        full_name=body.full_name,
+        email=body.email,
+        password=body.password,
+        phone_number=body.phone_number,
+        role=body.role,
+        ip_address=ip,
+        user_agent=ua,
     )
     return AuthResponse(
         user=UserOut.model_validate(result["user"]),
@@ -118,3 +153,22 @@ async def change_password(
         new_password=body.new_password,
     )
     return ok("Password changed successfully")
+
+
+@router.post("/forgot-password")
+async def forgot_password(body: ForgotPasswordRequest, request: Request, db: DBSession):
+    """Reset a password using only a phone number.
+
+    DEV/TEST ONLY: no OTP, SMS, email, or ownership verification is
+    performed intentionally. Anyone who knows a phone number could reset
+    that account's password. For development/testing only — NOT suitable
+    for production.
+    """
+    ip, ua = _request_context(request)
+    await AuthService(db).forgot_password(
+        phone_number=body.phone_number,
+        new_password=body.new_password,
+        ip_address=ip,
+        user_agent=ua,
+    )
+    return ok("Password updated successfully")

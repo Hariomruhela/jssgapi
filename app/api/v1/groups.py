@@ -9,7 +9,8 @@ from app.core.constants import AuditAction
 from app.core.exceptions import NotFoundException
 from app.core.permissions import Permission
 from app.core.responses import created, ok, paginated
-from app.dependencies import DBSession, require_permission
+from app.core.scope import assert_group_access
+from app.dependencies import CurrentUser, DBSession, require_permission
 from app.models.group import SocialGroup
 from app.repositories.group_repository import GroupRepository
 from app.schemas.group import SocialGroupCreate, SocialGroupOut, SocialGroupUpdate
@@ -82,11 +83,14 @@ async def get_group(group_id: UUID, db: DBSession):
 
 
 @router.patch("/{group_id}", dependencies=[UPDATE])
-async def update_group(group_id: UUID, body: SocialGroupUpdate, db: DBSession):
+async def update_group(
+    group_id: UUID, body: SocialGroupUpdate, current_user: CurrentUser, db: DBSession
+):
     repo = GroupRepository(db)
     group = await repo.get_by_id(group_id)
     if group is None:
         raise NotFoundException("Group", str(group_id))
+    await assert_group_access(db, current_user, group.id)
     group = await repo.update(group, **body.model_dump(exclude_unset=True))
     await AuditService(db).log(
         AuditAction.GROUP_UPDATE, entity_type="group", entity_id=group.id
@@ -96,11 +100,12 @@ async def update_group(group_id: UUID, body: SocialGroupUpdate, db: DBSession):
 
 
 @router.delete("/{group_id}", dependencies=[DELETE])
-async def delete_group(group_id: UUID, db: DBSession):
+async def delete_group(group_id: UUID, current_user: CurrentUser, db: DBSession):
     repo = GroupRepository(db)
     group = await repo.get_by_id(group_id)
     if group is None:
         raise NotFoundException("Group", str(group_id))
+    await assert_group_access(db, current_user, group.id)
     await repo.delete(group)
     await AuditService(db).log(
         AuditAction.GROUP_DELETE, entity_type="group", entity_id=group.id

@@ -6,6 +6,7 @@ from enum import Enum
 class RoleName(str, Enum):
     SUPER_ADMIN = "SUPER_ADMIN"
     FEDERATION_ADMIN = "FEDERATION_ADMIN"
+    ADMIN = "ADMIN"
     REGIONAL_ADMIN = "REGIONAL_ADMIN"
     GROUP_ADMIN = "GROUP_ADMIN"
     MEMBER = "MEMBER"

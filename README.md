@@ -132,6 +132,11 @@ alembic downgrade -1
 
 > `DATABASE_URL` configured as `postgresql+asyncpg://` is used as-is by the app;
 > Alembic automatically resolves the sync `psycopg2` driver.
+>
+> Hosted Postgres providers (e.g. Neon via Vercel) often supply a plain
+> `postgresql://` connection string. The app automatically rewrites it to
+> `postgresql+asyncpg://` so the async engine always uses asyncpg; set
+> `DATABASE_URL` in Vercel to your Neon connection string (either form works).
 
 ### 5. Run the API
 

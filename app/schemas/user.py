@@ -18,7 +18,7 @@ class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    email: str
+    email: str | None = None
     phone_number: str | None = None
     full_name: str
     is_active: bool
@@ -44,6 +44,10 @@ class UserUpdate(BaseModel):
     phone_number: str | None = None
     is_active: bool | None = None
     role_name: str | None = None
+
+
+class RoleChangeRequest(BaseModel):
+    role_name: str
 
 
 class LocalUserOut(UserOut):

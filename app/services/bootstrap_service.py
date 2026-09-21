@@ -73,6 +73,7 @@ async def _create_default_super_admin(
         return
     user = User(
         email=admin_email,
+        phone_number="+910000000000",
         full_name="Super Admin",
         password_hash=hash_password("ChangeMe123!"),
         is_active=True,
@@ -104,6 +105,7 @@ def _role_descriptions() -> dict[str, str]:
     return {
         RoleName.SUPER_ADMIN.value: "Super administrator with full platform access",
         RoleName.FEDERATION_ADMIN.value: "Administrator for the entire federation",
+        RoleName.ADMIN.value: "Platform administrator with federation-level access",
         RoleName.REGIONAL_ADMIN.value: "Administrator for a region",
         RoleName.GROUP_ADMIN.value: "Administrator for a social group",
         RoleName.MEMBER.value: "Registered community member",

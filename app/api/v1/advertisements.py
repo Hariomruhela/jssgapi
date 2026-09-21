@@ -10,6 +10,7 @@ from app.core.constants import AdvertisementStatus, AuditAction
 from app.core.exceptions import NotFoundException
 from app.core.permissions import Permission
 from app.core.responses import created, ok, paginated
+from app.core.scope import assert_group_access, resolve_managed_group
 from app.dependencies import CurrentUser, DBSession, require_permission
 from app.models.advertisement import Advertisement
 from app.repositories.advertisement_repository import AdvertisementRepository
@@ -79,7 +80,11 @@ async def create_advertisement(
     body: AdvertisementCreate, current_user: CurrentUser, db: DBSession
 ):
     ad = await AdvertisementRepository(db).create(
-        advertiser_id=current_user.id, **body.model_dump()
+        advertiser_id=current_user.id,
+        **{
+            **body.model_dump(),
+            "group_id": await resolve_managed_group(db, current_user, body.group_id),
+        },
     )
     await db.flush()
     return created(
@@ -129,21 +134,28 @@ async def approve_advertisement(
 
 @router.patch("/{advertisement_id}", dependencies=[CREATE])
 async def update_advertisement(
-    advertisement_id: UUID, body: AdvertisementUpdate, db: DBSession
+    advertisement_id: UUID,
+    body: AdvertisementUpdate,
+    current_user: CurrentUser,
+    db: DBSession,
 ):
     repo = AdvertisementRepository(db)
     ad = await repo.get_by_id(advertisement_id)
     if ad is None:
         raise NotFoundException("Advertisement", str(advertisement_id))
+    await assert_group_access(db, current_user, ad.group_id)
     ad = await repo.update(ad, **body.model_dump(exclude_unset=True))
     return ok("Advertisement updated successfully", AdvertisementOut.model_validate(ad))
 
 
 @router.delete("/{advertisement_id}", dependencies=[CREATE])
-async def delete_advertisement(advertisement_id: UUID, db: DBSession):
+async def delete_advertisement(
+    advertisement_id: UUID, current_user: CurrentUser, db: DBSession
+):
     repo = AdvertisementRepository(db)
     ad = await repo.get_by_id(advertisement_id)
     if ad is None:
         raise NotFoundException("Advertisement", str(advertisement_id))
+    await assert_group_access(db, current_user, ad.group_id)
     await repo.delete(ad)
     return ok("Advertisement deleted successfully")

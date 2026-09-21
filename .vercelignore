@@ -1,0 +1,6 @@
+# Force Vercel to install runtime dependencies from requirements.txt.
+# Vercel's Python build resolves deps with uv, which prioritizes
+# pyproject.toml over requirements.txt when both exist. requirements.txt is
+# the single source of truth for the deployed runtime, so pyproject.toml
+# (whose dependency list duplicates it for dev tooling) is excluded.
+pyproject.toml

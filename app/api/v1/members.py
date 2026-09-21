@@ -10,7 +10,8 @@ from app.core.constants import AuditAction, MemberStatus
 from app.core.exceptions import BadRequestException, NotFoundException
 from app.core.permissions import Permission
 from app.core.responses import created, ok, paginated
-from app.dependencies import DBSession, require_permission
+from app.core.scope import assert_group_access, resolve_managed_group
+from app.dependencies import CurrentUser, DBSession, require_permission
 from app.models.member import Member
 from app.repositories.member_repository import MemberRepository
 from app.schemas.member import (
@@ -74,11 +75,13 @@ async def list_members(
 
 
 @router.post("", dependencies=[CREATE])
-async def create_member(body: MemberCreate, db: DBSession):
+async def create_member(body: MemberCreate, current_user: CurrentUser, db: DBSession):
     repo = MemberRepository(db)
     if await repo.get_by_user_id(body.user_id):
         raise BadRequestException("A member profile already exists for this user")
-    member = await repo.create(**body.model_dump())
+    data = body.model_dump()
+    data["group_id"] = await resolve_managed_group(db, current_user, body.group_id)
+    member = await repo.create(**data)
     await AuditService(db).log(
         AuditAction.MEMBER_CREATE, entity_type="member", entity_id=member.id
     )
@@ -95,11 +98,16 @@ async def get_member(member_id: UUID, db: DBSession):
 
 
 @router.patch("/{member_id}", dependencies=[UPDATE])
-async def update_member(member_id: UUID, body: MemberUpdate, db: DBSession):
+async def update_member(
+    member_id: UUID, body: MemberUpdate, current_user: CurrentUser, db: DBSession
+):
     repo = MemberRepository(db)
     member = await repo.get_by_id(member_id)
     if member is None:
         raise NotFoundException("Member", str(member_id))
+    await assert_group_access(db, current_user, member.group_id)
+    if body.group_id is not None:
+        await assert_group_access(db, current_user, body.group_id)
     member = await repo.update(member, **body.model_dump(exclude_unset=True))
     required_fields = ["first_name", "last_name", "contact_email"]
     member.is_profile_complete = all(getattr(member, f) for f in required_fields)
@@ -121,6 +129,7 @@ async def approve_member(
     member = await repo.get_by_id(member_id)
     if member is None:
         raise NotFoundException("Member", str(member_id))
+    await assert_group_access(db, current_user, member.group_id)
     if body.status in (
         MemberStatus.APPROVED,
         MemberStatus.REJECTED,
@@ -154,10 +163,11 @@ async def approve_member(
 
 
 @router.delete("/{member_id}", dependencies=[DELETE])
-async def delete_member(member_id: UUID, db: DBSession):
+async def delete_member(member_id: UUID, current_user: CurrentUser, db: DBSession):
     repo = MemberRepository(db)
     member = await repo.get_by_id(member_id)
     if member is None:
         raise NotFoundException("Member", str(member_id))
+    await assert_group_access(db, current_user, member.group_id)
     await repo.delete(member)
     return ok("Member deleted successfully")

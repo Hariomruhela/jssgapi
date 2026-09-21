@@ -43,6 +43,7 @@ def _register(client, phone: str) -> str:
             "full_name": "OTP Test User",
             "email": email,
             "password": "StrongPass123!",
+            "confirm_password": "StrongPass123!",
             "phone_number": phone,
         },
     )

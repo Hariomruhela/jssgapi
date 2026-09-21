@@ -8,7 +8,8 @@ from sqlalchemy import select
 from app.core.exceptions import NotFoundException
 from app.core.permissions import Permission
 from app.core.responses import created, ok
-from app.dependencies import DBSession, require_permission
+from app.core.scope import assert_group_access
+from app.dependencies import CurrentUser, DBSession, require_permission
 from app.models.member import Member
 from app.models.professional import ProfessionalInformation
 from app.repositories.professional_repository import ProfessionalInfoRepository
@@ -45,9 +46,13 @@ async def list_professional(member_id: UUID, db: DBSession):
 
 @router.post("", dependencies=[WRITE])
 async def create_professional_info(
-    member_id: UUID, body: ProfessionalInfoCreate, db: DBSession
+    member_id: UUID,
+    body: ProfessionalInfoCreate,
+    current_user: CurrentUser,
+    db: DBSession,
 ):
-    await _get_member(db, member_id)
+    member = await _get_member(db, member_id)
+    await assert_group_access(db, current_user, member.group_id)
     info = await ProfessionalInfoRepository(db).create(
         member_id=member_id, **body.model_dump()
     )
@@ -81,9 +86,12 @@ async def update_professional_info(
     member_id: UUID,
     info_id: UUID,
     body: ProfessionalInfoUpdate,
+    current_user: CurrentUser,
     db: DBSession,
 ):
     repo = ProfessionalInfoRepository(db)
+    member = await _get_member(db, member_id)
+    await assert_group_access(db, current_user, member.group_id)
     result = await db.execute(
         select(ProfessionalInformation).where(
             ProfessionalInformation.id == info_id,
@@ -101,8 +109,12 @@ async def update_professional_info(
 
 
 @router.delete("/{info_id}", dependencies=[WRITE])
-async def delete_professional_info(member_id: UUID, info_id: UUID, db: DBSession):
+async def delete_professional_info(
+    member_id: UUID, info_id: UUID, current_user: CurrentUser, db: DBSession
+):
     repo = ProfessionalInfoRepository(db)
+    member = await _get_member(db, member_id)
+    await assert_group_access(db, current_user, member.group_id)
     result = await db.execute(
         select(ProfessionalInformation).where(
             ProfessionalInformation.id == info_id,

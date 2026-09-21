@@ -9,6 +9,7 @@ from app.core.constants import AuditAction
 from app.core.exceptions import NotFoundException
 from app.core.permissions import Permission
 from app.core.responses import created, ok, paginated
+from app.core.scope import assert_group_access, resolve_managed_group
 from app.dependencies import CurrentUser, DBSession, require_permission
 from app.models.event import Event
 from app.repositories.event_repository import EventRepository
@@ -60,7 +61,9 @@ async def list_events(
 
 @router.post("", dependencies=[CREATE])
 async def create_event(body: EventCreate, current_user: CurrentUser, db: DBSession):
-    event = await EventRepository(db).create(**body.model_dump())
+    data = body.model_dump()
+    data["group_id"] = await resolve_managed_group(db, current_user, body.group_id)
+    event = await EventRepository(db).create(**data)
     await AuditService(db).log(
         AuditAction.EVENT_CREATE,
         user_id=current_user.id,
@@ -96,6 +99,9 @@ async def update_event(
     event = await repo.get_by_id(event_id)
     if event is None:
         raise NotFoundException("Event", str(event_id))
+    await assert_group_access(db, current_user, event.group_id)
+    if body.group_id is not None:
+        await assert_group_access(db, current_user, body.group_id)
     event = await repo.update(event, **body.model_dump(exclude_unset=True))
     await AuditService(db).log(
         AuditAction.EVENT_UPDATE,
@@ -108,10 +114,11 @@ async def update_event(
 
 
 @router.delete("/{event_id}", dependencies=[DELETE])
-async def delete_event(event_id: UUID, db: DBSession):
+async def delete_event(event_id: UUID, current_user: CurrentUser, db: DBSession):
     repo = EventRepository(db)
     event = await repo.get_by_id(event_id)
     if event is None:
         raise NotFoundException("Event", str(event_id))
+    await assert_group_access(db, current_user, event.group_id)
     await repo.delete(event)
     return ok("Event deleted successfully")

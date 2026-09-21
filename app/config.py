@@ -3,7 +3,27 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _async_database_url(url: str) -> str:
+    """Force the SQLAlchemy async engine to use an async driver.
+
+    Neon/Vercel often provide a plain ``postgresql://`` (or legacy
+    ``postgres://`` / ``postgresql+psycopg2://``) URL. ``create_async_engine``
+    maps that scheme to the default sync driver (psycopg2), which fails with
+    "The asyncio extension requires an async driver". Rewrite the scheme to
+    ``postgresql+asyncpg://`` unless an async driver is already selected.
+    """
+    url = url.strip()
+    if url.startswith("postgresql://"):
+        return "postgresql+asyncpg://" + url[len("postgresql://") :]
+    if url.startswith("postgres://"):
+        return "postgresql+asyncpg://" + url[len("postgres://") :]
+    if url.startswith("postgresql+psycopg2://"):
+        return "postgresql+asyncpg://" + url[len("postgresql+psycopg2://") :]
+    return url
 
 
 class Settings(BaseSettings):
@@ -24,6 +44,11 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://jssg:jssg_secret@localhost:5432/jssg_db"
     database_echo: bool = False
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _validate_database_url(cls, value: str) -> str:
+        return _async_database_url(value)
 
     # JWT
     jwt_secret: str = "CHANGE-ME-IN-PRODUCTION"

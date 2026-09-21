@@ -8,7 +8,8 @@ from sqlalchemy import func, select
 from app.core.exceptions import NotFoundException
 from app.core.permissions import Permission
 from app.core.responses import created, ok, paginated
-from app.dependencies import DBSession, require_permission
+from app.core.scope import assert_group_access, resolve_managed_group
+from app.dependencies import CurrentUser, DBSession, require_permission
 from app.models.trustee import Trustee
 from app.repositories.trustee_repository import TrusteeRepository
 from app.schemas.trustee import TrusteeCreate, TrusteeOut, TrusteeUpdate
@@ -60,8 +61,10 @@ async def list_trustees(
 
 
 @router.post("", dependencies=[CREATE])
-async def create_trustee(body: TrusteeCreate, db: DBSession):
-    trustee = await TrusteeRepository(db).create(**body.model_dump())
+async def create_trustee(body: TrusteeCreate, current_user: CurrentUser, db: DBSession):
+    data = body.model_dump()
+    data["group_id"] = await resolve_managed_group(db, current_user, body.group_id)
+    trustee = await TrusteeRepository(db).create(**data)
     await db.flush()
     return created("Trustee created successfully", TrusteeOut.model_validate(trustee))
 
@@ -75,20 +78,28 @@ async def get_trustee(trustee_id: UUID, db: DBSession):
 
 
 @router.patch("/{trustee_id}", dependencies=[UPDATE])
-async def update_trustee(trustee_id: UUID, body: TrusteeUpdate, db: DBSession):
+async def update_trustee(
+    trustee_id: UUID, body: TrusteeUpdate, current_user: CurrentUser, db: DBSession
+):
     repo = TrusteeRepository(db)
     trustee = await repo.get_by_id(trustee_id)
     if trustee is None:
         raise NotFoundException("Trustee", str(trustee_id))
+    await assert_group_access(db, current_user, trustee.group_id)
+    if body.group_id is not None:
+        await assert_group_access(db, current_user, body.group_id)
     trustee = await repo.update(trustee, **body.model_dump(exclude_unset=True))
     return ok("Trustee updated successfully", TrusteeOut.model_validate(trustee))
 
 
 @router.delete("/{trustee_id}", dependencies=[DELETE])
-async def delete_trustee(trustee_id: UUID, db: DBSession):
+async def delete_trustee(
+    trustee_id: UUID, current_user: CurrentUser, db: DBSession
+):
     repo = TrusteeRepository(db)
     trustee = await repo.get_by_id(trustee_id)
     if trustee is None:
         raise NotFoundException("Trustee", str(trustee_id))
+    await assert_group_access(db, current_user, trustee.group_id)
     await repo.delete(trustee)
     return ok("Trustee deleted successfully")

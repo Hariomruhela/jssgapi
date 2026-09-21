@@ -8,7 +8,8 @@ from sqlalchemy import select
 from app.core.exceptions import NotFoundException
 from app.core.permissions import Permission
 from app.core.responses import created, ok
-from app.dependencies import DBSession, require_permission
+from app.core.scope import assert_group_access
+from app.dependencies import CurrentUser, DBSession, require_permission
 from app.models.family import FamilyMember
 from app.models.member import Member
 from app.repositories.family_repository import FamilyMemberRepository
@@ -43,15 +44,17 @@ async def list_family(member_id: UUID, db: DBSession):
 
 @router.post("", dependencies=[CREATE])
 async def create_family_member(
-    member_id: UUID, body: FamilyMemberCreate, db: DBSession
+    member_id: UUID, body: FamilyMemberCreate, current_user: CurrentUser, db: DBSession
 ):
-    await _get_member(db, member_id)
-    member = await FamilyMemberRepository(db).create(
+    member = await _get_member(db, member_id)
+    await assert_group_access(db, current_user, member.group_id)
+    family_member = await FamilyMemberRepository(db).create(
         member_id=member_id, **body.model_dump()
     )
     await db.flush()
     return created(
-        "Family member created successfully", FamilyMemberOut.model_validate(member)
+        "Family member created successfully",
+        FamilyMemberOut.model_validate(family_member),
     )
 
 
@@ -73,9 +76,15 @@ async def get_family_member(member_id: UUID, family_id: UUID, db: DBSession):
 
 @router.patch("/{family_id}", dependencies=[UPDATE])
 async def update_family_member(
-    member_id: UUID, family_id: UUID, body: FamilyMemberUpdate, db: DBSession
+    member_id: UUID,
+    family_id: UUID,
+    body: FamilyMemberUpdate,
+    current_user: CurrentUser,
+    db: DBSession,
 ):
     repo = FamilyMemberRepository(db)
+    member = await _get_member(db, member_id)
+    await assert_group_access(db, current_user, member.group_id)
     result = await db.execute(
         select(FamilyMember).where(
             FamilyMember.id == family_id, FamilyMember.member_id == member_id
@@ -91,8 +100,12 @@ async def update_family_member(
 
 
 @router.delete("/{family_id}", dependencies=[DELETE])
-async def delete_family_member(member_id: UUID, family_id: UUID, db: DBSession):
+async def delete_family_member(
+    member_id: UUID, family_id: UUID, current_user: CurrentUser, db: DBSession
+):
     repo = FamilyMemberRepository(db)
+    member = await _get_member(db, member_id)
+    await assert_group_access(db, current_user, member.group_id)
     result = await db.execute(
         select(FamilyMember).where(
             FamilyMember.id == family_id, FamilyMember.member_id == member_id

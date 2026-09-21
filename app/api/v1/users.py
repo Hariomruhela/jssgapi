@@ -16,13 +16,14 @@ from app.core.security import hash_password
 from app.dependencies import DBSession, require_permission
 from app.models.user import Role, User
 from app.repositories.user_repository import UserRepository
-from app.schemas.user import RoleOut, UserCreate, UserOut, UserUpdate
+from app.schemas.user import RoleChangeRequest, RoleOut, UserCreate, UserOut, UserUpdate
 from app.utils.validators import normalize_phone_number
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
 READ = Depends(require_permission(Permission.USER_READ))
 MANAGE = Depends(require_permission(Permission.USER_MANAGE))
+ROLE = Depends(require_permission(Permission.ROLE_MANAGE))
 
 
 async def _resolve_role(db, role_name: str | None) -> UUID | None:
@@ -103,6 +104,18 @@ async def update_user(user_id: UUID, body: UserUpdate, db: DBSession):
         data["role_id"] = await _resolve_role(db, role_name)
     user = await repo.update(user, **data)
     return ok("User updated successfully", UserOut.model_validate(user))
+
+
+@router.patch("/{user_id}/role", dependencies=[ROLE])
+async def change_user_role(user_id: UUID, body: RoleChangeRequest, db: DBSession):
+    repo = UserRepository(db)
+    user = await repo.get_by_id(user_id)
+    if user is None:
+        raise NotFoundException("User", str(user_id))
+    user.role_id = await _resolve_role(db, body.role_name)
+    await db.flush()
+    await db.refresh(user)
+    return ok("User role updated successfully", UserOut.model_validate(user))
 
 
 @router.delete("/{user_id}", dependencies=[MANAGE])
