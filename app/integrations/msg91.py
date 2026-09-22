@@ -57,6 +57,22 @@ def _extract_req_id(payload: dict[str, Any]) -> str | None:
     return str(req_id) if req_id else None
 
 
+def _widget_configured() -> bool:
+    return bool(settings.msg91_widget_id and settings.msg91_widget_token)
+
+
+def _widget_headers() -> dict[str, str]:
+    return {"content-type": "application/json"}
+
+
+def _widget_body(**fields: Any) -> dict[str, Any]:
+    return {
+        "widgetId": settings.msg91_widget_id,
+        "tokenAuth": settings.msg91_widget_token,
+        **fields,
+    }
+
+
 def _extract_access_token(payload: dict[str, Any]) -> str | None:
     data = payload.get("data")
     if isinstance(data, dict):
@@ -88,13 +104,13 @@ async def send_otp(mobile: str) -> str:
     generated or stored locally. Raises ``BadRequestException`` on failure
     (never logs the OTP).
     """
-    if not settings.msg91_auth_key or not settings.msg91_widget_id:
+    if not _widget_configured():
         raise BadRequestException(
             "Phone verification is not configured on the server"
         )
 
-    headers = {"authkey": settings.msg91_auth_key, "content-type": "application/json"}
-    payload = {"widgetId": settings.msg91_widget_id, "identifier": mobile}
+    headers = _widget_headers()
+    payload = _widget_body(identifier=mobile.lstrip("+"))
 
     try:
         async with httpx.AsyncClient(
@@ -108,7 +124,7 @@ async def send_otp(mobile: str) -> str:
             "msg91_send_failed", provider="msg91", error_type="network"
         )
         raise BadRequestException(
-            "Could not send the OTP. Please try again."
+            "Could not send the OTP due to a network error. Please try again."
         ) from None
 
     body = _safe_json(response)
@@ -117,13 +133,19 @@ async def send_otp(mobile: str) -> str:
         or not isinstance(body, dict)
         or not _is_success(body)
     ):
-        _log_response_status(response.status_code, _safe_message(body))
-        raise BadRequestException("Could not send the OTP. Please try again.")
+        message = _safe_message(body)
+        _log_response_status(response.status_code, message)
+        raise BadRequestException(
+            _provider_message("send", response.status_code, message)
+        )
 
     req_id = _extract_req_id(body)
     if not req_id:
         logger.warning("msg91_send_missing_reqid", provider="msg91")
-        raise BadRequestException("Could not send the OTP. Please try again.")
+        raise BadRequestException(
+            "MSG91 accepted the request but returned no request ID. "
+            "Please try again or check the widget configuration."
+        )
 
     logger.info(
         "msg91_otp_sent", provider="msg91", mobile=_mask_mobile(mobile)
@@ -139,15 +161,15 @@ async def verify_otp(req_id: str, otp: str) -> str:
     invalid/expired OTP and ``BadRequestException`` for provider failures.
     Never logs the OTP or the returned token.
     """
-    if not settings.msg91_auth_key:
+    if not _widget_configured():
         raise BadRequestException(
             "Phone verification is not configured on the server"
         )
     if not req_id or not otp:
         raise UnauthorizedException("Invalid or expired OTP")
 
-    headers = {"authkey": settings.msg91_auth_key, "content-type": "application/json"}
-    payload = {"reqId": req_id, "otp": otp}
+    headers = _widget_headers()
+    payload = _widget_body(reqId=req_id, otp=otp)
 
     try:
         async with httpx.AsyncClient(
@@ -161,7 +183,7 @@ async def verify_otp(req_id: str, otp: str) -> str:
             "msg91_verify_otp_network_failed", provider="msg91", error_type="network"
         )
         raise BadRequestException(
-            "Could not verify the OTP. Please try again."
+            "Could not verify the OTP due to a network error. Please try again."
         ) from None
 
     body = _safe_json(response)
@@ -170,7 +192,8 @@ async def verify_otp(req_id: str, otp: str) -> str:
         or not isinstance(body, dict)
         or not _is_success(body)
     ):
-        _log_response_status(response.status_code, _safe_message(body))
+        message = _safe_message(body)
+        _log_response_status(response.status_code, message)
         raise UnauthorizedException(
             "Invalid OTP. Please check the OTP and try again."
         )
@@ -193,18 +216,15 @@ async def verify_access_token(access_token: str) -> dict[str, Any]:
     Raises ``UnauthorizedException`` for invalid/expired tokens and
     ``BadRequestException`` for provider/config/network failures.
     """
-    if not settings.msg91_auth_key:
+    if not _widget_configured():
         raise BadRequestException(
             "Phone verification is not configured on the server"
         )
     if not access_token:
         raise UnauthorizedException("Invalid or expired verification token")
 
-    headers = {
-        "authkey": settings.msg91_auth_key,
-        "content-type": "application/json",
-    }
-    payload = {"accessToken": access_token}
+    headers = _widget_headers()
+    payload = _widget_body(accessToken=access_token)
 
     try:
         async with httpx.AsyncClient(
@@ -220,7 +240,8 @@ async def verify_access_token(access_token: str) -> dict[str, Any]:
             error_type="network",
         )
         raise BadRequestException(
-            "Could not verify your mobile number. Please try again."
+            "Could not verify your mobile number due to a network error. "
+            "Please try again."
         ) from None
 
     body = _safe_json(response)
@@ -229,7 +250,8 @@ async def verify_access_token(access_token: str) -> dict[str, Any]:
         or not isinstance(body, dict)
         or not _is_success(body)
     ):
-        _log_response_status(response.status_code, _safe_message(body))
+        message = _safe_message(body)
+        _log_response_status(response.status_code, message)
         raise UnauthorizedException(
             "Mobile number verification failed. Please verify your OTP again."
         )
@@ -260,6 +282,11 @@ def _safe_message(body: Any) -> str:
     if isinstance(body, dict):
         return str(body.get("message", ""))
     return ""
+
+
+def _provider_message(action: str, status_code: int, message: str) -> str:
+    details = message.strip() if message else f"HTTP {status_code}"
+    return f"Could not {action} the OTP: {details}"
 
 
 def _mask_mobile(mobile: str) -> str:
