@@ -25,7 +25,8 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.integrations.msg91 import verify_access_token
+from app.integrations.msg91 import send_otp as msg91_send_otp
+from app.integrations.msg91 import verify_access_token, verify_otp
 from app.integrations.sms import is_dev_sms, send_otp
 from app.models.otp_code import OtpCode
 from app.models.user import RefreshToken, Role, User
@@ -45,6 +46,36 @@ class AuthService:
         self.members = MemberRepository(session)
         self.audit = AuditService(session)
 
+    async def send_registration_otp(
+        self,
+        *,
+        phone: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> str:
+        """Send an MSG91 OTP for the registration flow.
+
+        Only numbers that are not already registered get an OTP. The OTP is
+        generated, delivered, and stored by MSG91 — this server never sees or
+        stores it. Returns MSG91's ``req_id``.
+        """
+        normalized = normalize_phone_number(phone)
+        if await self.users.get_by_phone(normalized):
+            raise AlreadyExistsException(
+                "An account with this phone number already exists"
+            )
+
+        req_id = await msg91_send_otp(normalized)
+        await self.audit.log(
+            AuditAction.OTP_REQUEST,
+            entity_type="registration",
+            details={"phone": self._mask_phone(normalized)},
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        await self.session.flush()
+        return req_id
+
     async def register(
         self,
         *,
@@ -53,7 +84,8 @@ class AuthService:
         password: str,
         phone_number: str,
         role: str | None = None,
-        msg91_token: str,
+        otp: str,
+        req_id: str,
         ip_address: str | None = None,
         user_agent: str | None = None,
     ) -> dict:
@@ -63,7 +95,8 @@ class AuthService:
         email = email.strip().lower() if email else None
 
         phone_normalized = normalize_phone_number(phone_number)
-        verified = await verify_access_token(msg91_token)
+        access_token = await verify_otp(req_id, otp)
+        verified = await verify_access_token(access_token)
         verified_mobile = verified.get("mobile")
         if not verified_mobile:
             raise UnauthorizedException(

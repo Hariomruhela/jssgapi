@@ -20,16 +20,28 @@ def client():
 
 @pytest.fixture(autouse=True)
 def _mock_msg91_verify(monkeypatch):
-    """Pretend the MSG91 access token is valid for the phone it encodes."""
+    """Pretend MSG91 verifies OTPs and returns the req_id-encoded mobile."""
 
-    async def _fake_verify(access_token: str) -> dict:
+    from app.core.exceptions import UnauthorizedException
+
+    async def _fake_send_otp(mobile: str) -> str:
+        return mobile
+
+    async def _fake_verify_otp(req_id: str, otp: str) -> str:
+        if req_id == "req-invalid" or otp == "000000":
+            raise UnauthorizedException("Invalid OTP")
+        return req_id
+
+    async def _fake_verify_token(access_token: str) -> dict:
         if access_token == "invalid-token":
-            from app.core.exceptions import UnauthorizedException
-
             raise UnauthorizedException("Mobile number verification failed")
         return {"mobile": access_token}
 
-    monkeypatch.setattr("app.services.auth_service.verify_access_token", _fake_verify)
+    monkeypatch.setattr("app.services.auth_service.msg91_send_otp", _fake_send_otp)
+    monkeypatch.setattr("app.services.auth_service.verify_otp", _fake_verify_otp)
+    monkeypatch.setattr(
+        "app.services.auth_service.verify_access_token", _fake_verify_token
+    )
 
 
 def _psycopg_url() -> str:
@@ -56,14 +68,16 @@ def _register(
     email: object = _MISSING,
     password: str = "V3ryStr0ng!Pass",
     confirm_password: str = "V3ryStr0ng!Pass",
-    msg91_token: str | None = None,
+    otp: str = "123456",
+    req_id: str | None = None,
 ) -> dict:
     body: dict[str, object] = {
         "full_name": "Auth Test User",
         "phone_number": phone,
         "password": password,
         "confirm_password": confirm_password,
-        "msg91_token": phone if msg91_token is None else msg91_token,
+        "otp": otp,
+        "req_id": phone if req_id is None else req_id,
     }
     if email is not _MISSING:
         body["email"] = email
@@ -173,18 +187,62 @@ def test_register_invalid_phone(client):
     assert result["status"] == 422
 
 
-def test_register_unverified_msg91_token(client):
+def test_register_invalid_otp(client):
     phone = _next_phone()
-    result = _register(client, phone, email=_next_email(), msg91_token="invalid-token")
+    result = _register(client, phone, email=_next_email(), otp="000000")
     assert result["status"] == 401
     _cleanup([], [phone])
 
 
-def test_register_phone_mismatch_with_verified_mobile(client):
+def test_register_otp_mismatch_with_phone(client):
     phone = _next_phone()
     other = _next_phone(1)
-    result = _register(client, phone, email=_next_email(), msg91_token=other)
+    result = _register(client, phone, email=_next_email(), req_id=other)
     assert result["status"] == 401
+    _cleanup([], [phone])
+
+
+def test_register_missing_otp_field(client):
+    resp = client.post(
+        "/api/v1/auth/register",
+        json={
+            "full_name": "Auth Test User",
+            "phone_number": _next_phone(),
+            "password": "V3ryStr0ng!Pass",
+            "confirm_password": "V3ryStr0ng!Pass",
+            "req_id": "req-123456",
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_register_missing_req_id_field(client):
+    resp = client.post(
+        "/api/v1/auth/register",
+        json={
+            "full_name": "Auth Test User",
+            "phone_number": _next_phone(),
+            "password": "V3ryStr0ng!Pass",
+            "confirm_password": "V3ryStr0ng!Pass",
+            "otp": _next_phone(),
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_send_register_otp_succeeds(client):
+    phone = _next_phone()
+    resp = client.post("/api/v1/auth/otp/send-register", json={"phone": phone})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["req_id"] == phone
+
+
+def test_send_register_otp_for_existing_user(client):
+    phone = _next_phone()
+    assert _register(client, phone, email=_next_email())["status"] == 200
+    resp = client.post("/api/v1/auth/otp/send-register", json={"phone": phone})
+    assert resp.status_code == 409
     _cleanup([], [phone])
 
 

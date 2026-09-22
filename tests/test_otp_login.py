@@ -22,9 +22,13 @@ def client():
 
 @pytest.fixture(autouse=True)
 def _mock_msg91_verify(monkeypatch):
+    async def _fake_verify_otp(req_id: str, otp: str) -> str:
+        return req_id
+
     async def _fake_verify(access_token: str) -> dict:
         return {"mobile": access_token}
 
+    monkeypatch.setattr("app.services.auth_service.verify_otp", _fake_verify_otp)
     monkeypatch.setattr("app.services.auth_service.verify_access_token", _fake_verify)
 
 
@@ -53,7 +57,8 @@ def _register(client, phone: str) -> str:
             "password": "StrongPass123!",
             "confirm_password": "StrongPass123!",
             "phone_number": phone,
-            "msg91_token": phone,
+            "otp": "123456",
+            "req_id": phone,
         },
     )
     assert resp.status_code == 200, resp.text

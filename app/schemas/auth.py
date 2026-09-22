@@ -18,15 +18,25 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     confirm_password: str = Field(min_length=8, max_length=128)
     role: str | None = Field(default=None, max_length=50)
-    msg91_token: str = Field(min_length=1, max_length=4096)
+    otp: str = Field(min_length=6, max_length=6)
+    req_id: str = Field(min_length=1, max_length=512)
 
-    @field_validator("msg91_token", mode="before")
+    @field_validator("otp", mode="before")
     @classmethod
-    def _normalize_msg91_token(cls, value: object) -> object:
+    def _normalize_otp(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value.isdigit() or len(value) != 6:
+                raise ValueError("OTP must be a 6-digit number")
+        return value
+
+    @field_validator("req_id", mode="before")
+    @classmethod
+    def _normalize_req_id(cls, value: object) -> object:
         if isinstance(value, str):
             value = value.strip()
             if not value:
-                raise ValueError("msg91_token is required")
+                raise ValueError("req_id is required")
         return value
 
     @field_validator("email", mode="before")
@@ -84,6 +94,11 @@ class OtpRequest(BaseModel):
 
     def model_post_init(self, __context) -> None:
         self.phone = normalize_phone_number(self.phone)
+
+
+class SendRegisterOtpResponse(BaseModel):
+    req_id: str
+    expires_in: int = 300
 
 
 class OtpVerifyRequest(BaseModel):

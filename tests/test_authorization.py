@@ -89,7 +89,8 @@ def _register_member(
             "password": PASSWORD,
             "confirm_password": PASSWORD,
             "phone_number": phone,
-            "msg91_token": phone,
+            "otp": "123456",
+            "req_id": phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -115,10 +116,15 @@ def client():
 def _mock_msg91_verify():
     from unittest import mock
 
+    async def _fake_verify_otp(req_id: str, otp: str) -> str:
+        return req_id
+
     async def _fake_verify(access_token: str) -> dict:
         return {"mobile": access_token}
 
     with mock.patch(
+        "app.services.auth_service.verify_otp", _fake_verify_otp
+    ), mock.patch(
         "app.services.auth_service.verify_access_token", _fake_verify
     ):
         yield
@@ -352,7 +358,8 @@ def test_signup_role_handling(client):
             "password": PASSWORD,
             "confirm_password": PASSWORD,
             "phone_number": member_phone,
-            "msg91_token": member_phone,
+            "otp": "123456",
+            "req_id": member_phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -368,7 +375,8 @@ def test_signup_role_handling(client):
             "confirm_password": PASSWORD,
             "phone_number": admin_phone,
             "role": "Admin",
-            "msg91_token": admin_phone,
+            "otp": "123456",
+            "req_id": admin_phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -384,7 +392,8 @@ def test_signup_role_handling(client):
             "confirm_password": PASSWORD,
             "phone_number": empty_phone,
             "role": "",
-            "msg91_token": empty_phone,
+            "otp": "123456",
+            "req_id": empty_phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -400,7 +409,8 @@ def test_signup_role_handling(client):
             "confirm_password": PASSWORD,
             "phone_number": bad_phone,
             "role": "VIEWER",
-            "msg91_token": bad_phone,
+            "otp": "123456",
+            "req_id": bad_phone,
         },
     )
     assert resp.status_code == 400, resp.text
@@ -421,7 +431,8 @@ def test_login_response_includes_role(client):
             "password": PASSWORD,
             "confirm_password": PASSWORD,
             "phone_number": member_phone,
-            "msg91_token": member_phone,
+            "otp": "123456",
+            "req_id": member_phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -457,7 +468,8 @@ def test_logout_still_works(client):
             "password": PASSWORD,
             "confirm_password": PASSWORD,
             "phone_number": phone,
-            "msg91_token": phone,
+            "otp": "123456",
+            "req_id": phone,
         },
     )
     assert resp.status_code == 200, resp.text

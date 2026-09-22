@@ -19,6 +19,7 @@ from app.schemas.auth import (
     OtpVerifyRequest,
     RefreshRequest,
     RegisterRequest,
+    SendRegisterOtpResponse,
 )
 from app.schemas.user import UserOut
 from app.services.auth_service import AuthService
@@ -84,7 +85,8 @@ async def register(body: RegisterRequest, request: Request, db: DBSession):
         password=body.password,
         phone_number=body.phone_number,
         role=body.role,
-        msg91_token=body.msg91_token,
+        otp=body.otp,
+        req_id=body.req_id,
         ip_address=ip,
         user_agent=ua,
     )
@@ -92,6 +94,22 @@ async def register(body: RegisterRequest, request: Request, db: DBSession):
         user=UserOut.model_validate(result["user"]),
         tokens=result["tokens"],
     )
+
+
+@router.post("/otp/send-register", response_model=SendRegisterOtpResponse)
+async def send_register_otp(body: OtpRequest, request: Request, db: DBSession):
+    """Send an MSG91 OTP for new-user registration.
+
+    The OTP is generated, delivered, and stored by MSG91 — never by this
+    server. Returns a ``req_id`` that must be passed along with the OTP to
+    ``POST /auth/register``.
+    """
+    ip, ua = _request_context(request)
+    service = AuthService(db)
+    req_id = await service.send_registration_otp(
+        phone=body.phone, ip_address=ip, user_agent=ua
+    )
+    return SendRegisterOtpResponse(req_id=req_id)
 
 
 @router.post("/otp/request")

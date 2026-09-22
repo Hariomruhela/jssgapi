@@ -103,6 +103,8 @@ class Settings(BaseSettings):
     msg91_verify_url: str = (
         "https://control.msg91.com/api/v5/widget/verifyAccessToken"
     )
+    msg91_send_otp_url: str = "https://api.msg91.com/api/v5/widget/sendOtp"
+    msg91_verify_otp_url: str = "https://api.msg91.com/api/v5/widget/verifyOtp"
     msg91_timeout_seconds: float = 10.0
 
     # Cloudflare R2
