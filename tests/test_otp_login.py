@@ -20,6 +20,14 @@ def client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _mock_msg91_verify(monkeypatch):
+    async def _fake_verify(access_token: str) -> dict:
+        return {"mobile": access_token}
+
+    monkeypatch.setattr("app.services.auth_service.verify_access_token", _fake_verify)
+
+
 def _psycopg_url() -> str:
     return get_settings().database_url.replace(
         "postgresql+asyncpg://", "postgresql+psycopg2://"
@@ -45,6 +53,7 @@ def _register(client, phone: str) -> str:
             "password": "StrongPass123!",
             "confirm_password": "StrongPass123!",
             "phone_number": phone,
+            "msg91_token": phone,
         },
     )
     assert resp.status_code == 200, resp.text

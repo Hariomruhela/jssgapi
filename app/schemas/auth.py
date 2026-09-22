@@ -18,6 +18,16 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     confirm_password: str = Field(min_length=8, max_length=128)
     role: str | None = Field(default=None, max_length=50)
+    msg91_token: str = Field(min_length=1, max_length=4096)
+
+    @field_validator("msg91_token", mode="before")
+    @classmethod
+    def _normalize_msg91_token(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("msg91_token is required")
+        return value
 
     @field_validator("email", mode="before")
     @classmethod

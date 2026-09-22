@@ -25,6 +25,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
+from app.integrations.msg91 import verify_access_token
 from app.integrations.sms import is_dev_sms, send_otp
 from app.models.otp_code import OtpCode
 from app.models.user import RefreshToken, Role, User
@@ -52,6 +53,7 @@ class AuthService:
         password: str,
         phone_number: str,
         role: str | None = None,
+        msg91_token: str,
         ip_address: str | None = None,
         user_agent: str | None = None,
     ) -> dict:
@@ -59,9 +61,22 @@ class AuthService:
         if not full_name:
             raise BadRequestException("Full name cannot be empty")
         email = email.strip().lower() if email else None
+
+        phone_normalized = normalize_phone_number(phone_number)
+        verified = await verify_access_token(msg91_token)
+        verified_mobile = verified.get("mobile")
+        if not verified_mobile:
+            raise UnauthorizedException(
+                "Mobile number verification failed. Please verify your OTP again."
+            )
+        verified_phone = normalize_phone_number(str(verified_mobile))
+        if verified_phone != phone_normalized:
+            raise UnauthorizedException(
+                "Verified mobile number does not match the provided phone number"
+            )
+
         if email and await self.users.get_by_email(email):
             raise AlreadyExistsException("An account with this email already exists")
-        phone_normalized = normalize_phone_number(phone_number)
         if await self.users.get_by_phone(phone_normalized):
             raise AlreadyExistsException("An account with this phone number exists")
 
@@ -75,6 +90,7 @@ class AuthService:
             phone_number=phone_normalized,
             password_hash=hash_password(password),
             is_active=True,
+            is_phone_verified=True,
             role_id=role_row.id,
         )
 

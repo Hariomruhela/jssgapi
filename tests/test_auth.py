@@ -18,6 +18,20 @@ def client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _mock_msg91_verify(monkeypatch):
+    """Pretend the MSG91 access token is valid for the phone it encodes."""
+
+    async def _fake_verify(access_token: str) -> dict:
+        if access_token == "invalid-token":
+            from app.core.exceptions import UnauthorizedException
+
+            raise UnauthorizedException("Mobile number verification failed")
+        return {"mobile": access_token}
+
+    monkeypatch.setattr("app.services.auth_service.verify_access_token", _fake_verify)
+
+
 def _psycopg_url() -> str:
     return get_settings().database_url.replace(
         "postgresql+asyncpg://", "postgresql+psycopg2://"
@@ -42,12 +56,14 @@ def _register(
     email: object = _MISSING,
     password: str = "V3ryStr0ng!Pass",
     confirm_password: str = "V3ryStr0ng!Pass",
+    msg91_token: str | None = None,
 ) -> dict:
     body: dict[str, object] = {
         "full_name": "Auth Test User",
         "phone_number": phone,
         "password": password,
         "confirm_password": confirm_password,
+        "msg91_token": phone if msg91_token is None else msg91_token,
     }
     if email is not _MISSING:
         body["email"] = email
@@ -155,6 +171,21 @@ def test_register_duplicate_email(client):
 def test_register_invalid_phone(client):
     result = _register(client, "12345", email=_next_email())
     assert result["status"] == 422
+
+
+def test_register_unverified_msg91_token(client):
+    phone = _next_phone()
+    result = _register(client, phone, email=_next_email(), msg91_token="invalid-token")
+    assert result["status"] == 401
+    _cleanup([], [phone])
+
+
+def test_register_phone_mismatch_with_verified_mobile(client):
+    phone = _next_phone()
+    other = _next_phone(1)
+    result = _register(client, phone, email=_next_email(), msg91_token=other)
+    assert result["status"] == 401
+    _cleanup([], [phone])
 
 
 @pytest.mark.parametrize(

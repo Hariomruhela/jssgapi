@@ -2,9 +2,17 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# libpq/psycopg2-only connection-string query params. SQLAlchemy's asyncpg
+# dialect forwards every URL query param as an asyncpg.connect() keyword
+# argument, and asyncpg rejects these. asyncpg uses its own ``ssl`` setting
+# (default "prefer", which negotiates TLS with Neon) and handles channel
+# binding itself, so these can safely be dropped.
+_LIBPQ_ONLY_QUERY_PARAMS = {"sslmode", "channel_binding", "pgbouncer"}
 
 
 def _async_database_url(url: str) -> str:
@@ -18,11 +26,26 @@ def _async_database_url(url: str) -> str:
     """
     url = url.strip()
     if url.startswith("postgresql://"):
-        return "postgresql+asyncpg://" + url[len("postgresql://") :]
-    if url.startswith("postgres://"):
-        return "postgresql+asyncpg://" + url[len("postgres://") :]
-    if url.startswith("postgresql+psycopg2://"):
-        return "postgresql+asyncpg://" + url[len("postgresql+psycopg2://") :]
+        url = "postgresql+asyncpg://" + url[len("postgresql://") :]
+    elif url.startswith("postgres://"):
+        url = "postgresql+asyncpg://" + url[len("postgres://") :]
+    elif url.startswith("postgresql+psycopg2://"):
+        url = "postgresql+asyncpg://" + url[len("postgresql+psycopg2://") :]
+    elif url.startswith("postgresql+asyncpg://"):
+        pass
+    else:
+        return url
+
+    parts = urlsplit(url)
+    if parts.query:
+        kept = [
+            (key, value)
+            for key, value in parse_qsl(parts.query)
+            if key not in _LIBPQ_ONLY_QUERY_PARAMS
+        ]
+        url = urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, urlencode(kept), parts.fragment)
+        )
     return url
 
 
@@ -73,6 +96,14 @@ class Settings(BaseSettings):
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
+
+    # MSG91 OTP Widget
+    msg91_auth_key: str = ""
+    msg91_widget_id: str = ""
+    msg91_verify_url: str = (
+        "https://control.msg91.com/api/v5/widget/verifyAccessToken"
+    )
+    msg91_timeout_seconds: float = 10.0
 
     # Cloudflare R2
     cloudflare_r2_endpoint: str = ""

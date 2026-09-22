@@ -47,6 +47,7 @@ engine = create_async_engine(
     echo=settings.database_echo,
     connect_args={
         "ssl": "require",
+        "statement_cache_size": 0,
     },
     pool_size=20,
     max_overflow=10,

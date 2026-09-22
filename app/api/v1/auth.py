@@ -84,6 +84,7 @@ async def register(body: RegisterRequest, request: Request, db: DBSession):
         password=body.password,
         phone_number=body.phone_number,
         role=body.role,
+        msg91_token=body.msg91_token,
         ip_address=ip,
         user_agent=ua,
     )
