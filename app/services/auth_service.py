@@ -25,8 +25,8 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
+from app.integrations.msg91 import direct_mode, verify_access_token, verify_otp
 from app.integrations.msg91 import send_otp as msg91_send_otp
-from app.integrations.msg91 import verify_access_token, verify_otp
 from app.integrations.sms import is_dev_sms, send_otp
 from app.models.otp_code import OtpCode
 from app.models.user import RefreshToken, Role, User
@@ -95,9 +95,13 @@ class AuthService:
         email = email.strip().lower() if email else None
 
         phone_normalized = normalize_phone_number(phone_number)
-        access_token = await verify_otp(req_id, otp)
-        verified = await verify_access_token(access_token)
-        verified_mobile = verified.get("mobile")
+        verified_mobile: str | None
+        if direct_mode():
+            verified_mobile = await verify_otp(req_id, otp, mobile=phone_normalized)
+        else:
+            access_token = await verify_otp(req_id, otp)
+            verified = await verify_access_token(access_token)
+            verified_mobile = verified.get("mobile") if verified else None
         if not verified_mobile:
             raise UnauthorizedException(
                 "Mobile number verification failed. Please verify your OTP again."

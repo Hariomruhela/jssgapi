@@ -97,8 +97,13 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
 
-    # MSG91 OTP Widget
+    # MSG91 OTP
     msg91_auth_key: str = ""
+    msg91_otp_template_id: str = ""
+    msg91_otp_api_url: str = "https://control.msg91.com/api/v5/otp"
+    msg91_otp_verify_url: str = "https://control.msg91.com/api/v5/otp/verify"
+
+    # MSG91 OTP Widget (fallback)
     msg91_widget_id: str = ""
     msg91_widget_token: str = ""
     msg91_verify_url: str = (
