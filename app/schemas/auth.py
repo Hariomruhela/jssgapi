@@ -13,30 +13,18 @@ from app.utils.validators import (
 
 class RegisterRequest(BaseModel):
     full_name: str = Field(min_length=2, max_length=255)
-    phone_number: str
     email: str | None = Field(default=None, max_length=255)
-    password: str = Field(min_length=8, max_length=128)
-    confirm_password: str = Field(min_length=8, max_length=128)
+    password: str | None = Field(default=None, min_length=8, max_length=128)
     role: str | None = Field(default=None, max_length=50)
-    otp: str = Field(min_length=6, max_length=6)
-    req_id: str = Field(min_length=1, max_length=512)
+    id_token: str = Field(min_length=1, max_length=4096)
 
-    @field_validator("otp", mode="before")
+    @field_validator("id_token", mode="before")
     @classmethod
-    def _normalize_otp(cls, value: object) -> object:
-        if isinstance(value, str):
-            value = value.strip()
-            if not value.isdigit() or len(value) != 6:
-                raise ValueError("OTP must be a 6-digit number")
-        return value
-
-    @field_validator("req_id", mode="before")
-    @classmethod
-    def _normalize_req_id(cls, value: object) -> object:
+    def _normalize_id_token(cls, value: object) -> object:
         if isinstance(value, str):
             value = value.strip()
             if not value:
-                raise ValueError("req_id is required")
+                raise ValueError("id_token is required")
         return value
 
     @field_validator("email", mode="before")
@@ -53,23 +41,25 @@ class RegisterRequest(BaseModel):
     def model_post_init(self, __context) -> None:
         if not self.full_name.strip():
             raise ValueError("Full name cannot be empty")
-        if not validate_phone(self.phone_number):
-            raise ValueError("Invalid phone number")
         if self.email is not None and not validate_email(self.email):
             raise ValueError("Invalid email address")
-        validate_password(self.password)
-        if self.password != self.confirm_password:
-            raise ValueError("Passwords do not match")
+        if self.password is not None:
+            validate_password(self.password)
 
 
 class LoginRequest(BaseModel):
     email: str | None = None
     phone_number: str | None = None
-    password: str
+    password: str | None = None
+    id_token: str | None = None
 
     def model_post_init(self, __context) -> None:
+        if self.id_token:
+            return
         if not self.email and not self.phone_number:
-            raise ValueError("Either email or phone_number is required")
+            raise ValueError("Either email, phone_number, or id_token is required")
+        if self.password is None:
+            raise ValueError("Password is required without an id_token")
         if self.email and not validate_email(self.email):
             raise ValueError("Invalid email address")
         if self.phone_number and not validate_phone(self.phone_number):

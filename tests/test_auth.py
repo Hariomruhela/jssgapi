@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, delete
 from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
+from app.core.exceptions import UnauthorizedException
 from app.main import app
 from app.models.user import User
 
@@ -19,28 +20,22 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def _mock_msg91_verify(monkeypatch):
-    """Pretend MSG91 verifies OTPs and returns the req_id-encoded mobile."""
-
-    from app.core.exceptions import UnauthorizedException
+def _mock_external_auth(monkeypatch):
+    """Fake MSG91 send-OTP and Firebase ID-token verification."""
 
     async def _fake_send_otp(mobile: str) -> str:
         return mobile
 
-    async def _fake_verify_otp(req_id: str, otp: str) -> str:
-        if req_id == "req-invalid" or otp == "000000":
-            raise UnauthorizedException("Invalid OTP")
-        return req_id
-
-    async def _fake_verify_token(access_token: str) -> dict:
-        if access_token == "invalid-token":
-            raise UnauthorizedException("Mobile number verification failed")
-        return {"mobile": access_token}
+    def _fake_verify_id_token(id_token: str) -> dict:
+        if id_token == "invalid-token":
+            raise UnauthorizedException("Invalid or expired Firebase ID token")
+        if id_token == "no-phone-token":
+            return {"uid": "uid-no-phone"}
+        return {"uid": f"uid-{id_token}", "phone_number": id_token}
 
     monkeypatch.setattr("app.services.auth_service.msg91_send_otp", _fake_send_otp)
-    monkeypatch.setattr("app.services.auth_service.verify_otp", _fake_verify_otp)
     monkeypatch.setattr(
-        "app.services.auth_service.verify_access_token", _fake_verify_token
+        "app.services.auth_service.firebase_verify_id_token", _fake_verify_id_token
     )
 
 
@@ -67,17 +62,12 @@ def _register(
     phone: str,
     email: object = _MISSING,
     password: str = "V3ryStr0ng!Pass",
-    confirm_password: str = "V3ryStr0ng!Pass",
-    otp: str = "123456",
-    req_id: str | None = None,
+    id_token: str | None = None,
 ) -> dict:
     body: dict[str, object] = {
         "full_name": "Auth Test User",
-        "phone_number": phone,
         "password": password,
-        "confirm_password": confirm_password,
-        "otp": otp,
-        "req_id": phone if req_id is None else req_id,
+        "id_token": phone if id_token is None else id_token,
     }
     if email is not _MISSING:
         body["email"] = email
@@ -155,19 +145,21 @@ def test_register_multiple_users_without_email_succeeds(client):
     _cleanup([], phones)
 
 
-def test_register_password_mismatch(client):
+def test_register_without_password_succeeds(client):
     phone = _next_phone()
-    result = _register(client, phone, confirm_password="Different123")
-    assert result["status"] == 422
+    result = _register(client, phone, password=None)
+    assert result["status"] == 200, result["body"]
+    assert result["body"]["tokens"]["access_token"]
     _cleanup([], [phone])
 
 
-def test_register_duplicate_phone(client):
+def test_register_duplicate_phone_logs_existing_user_in(client):
     phone = _next_phone()
     first = _register(client, phone, email=_next_email())
     assert first["status"] == 200, first["body"]
     second = _register(client, phone, email=_next_email())
-    assert second["status"] == 409
+    assert second["status"] == 200, second["body"]
+    assert second["body"]["tokens"]["access_token"]
     _cleanup([], [phone])
 
 
@@ -182,50 +174,31 @@ def test_register_duplicate_email(client):
     _cleanup([email], [phone, second_phone])
 
 
-def test_register_invalid_phone(client):
-    result = _register(client, "12345", email=_next_email())
+def test_register_invalid_phone_from_token(client):
+    result = _register(client, "not-a-phone", id_token="not-a-phone")
     assert result["status"] == 422
 
 
-def test_register_invalid_otp(client):
+def test_register_invalid_id_token(client):
     phone = _next_phone()
-    result = _register(client, phone, email=_next_email(), otp="000000")
+    result = _register(client, phone, email=_next_email(), id_token="invalid-token")
     assert result["status"] == 401
     _cleanup([], [phone])
 
 
-def test_register_otp_mismatch_with_phone(client):
+def test_register_token_without_phone(client):
     phone = _next_phone()
-    other = _next_phone(1)
-    result = _register(client, phone, email=_next_email(), req_id=other)
-    assert result["status"] == 401
-    _cleanup([], [phone])
-
-
-def test_register_missing_otp_field(client):
-    resp = client.post(
-        "/api/v1/auth/register",
-        json={
-            "full_name": "Auth Test User",
-            "phone_number": _next_phone(),
-            "password": "V3ryStr0ng!Pass",
-            "confirm_password": "V3ryStr0ng!Pass",
-            "req_id": "req-123456",
-        },
+    result = _register(
+        client, phone, email=_next_email(), id_token="no-phone-token"
     )
-    assert resp.status_code == 422
+    assert result["status"] == 401
+    _cleanup([], [phone])
 
 
-def test_register_missing_req_id_field(client):
+def test_register_missing_id_token_field(client):
     resp = client.post(
         "/api/v1/auth/register",
-        json={
-            "full_name": "Auth Test User",
-            "phone_number": _next_phone(),
-            "password": "V3ryStr0ng!Pass",
-            "confirm_password": "V3ryStr0ng!Pass",
-            "otp": _next_phone(),
-        },
+        json={"full_name": "Auth Test User", "password": "V3ryStr0ng!Pass"},
     )
     assert resp.status_code == 422
 
@@ -268,6 +241,30 @@ def test_login_with_phone_succeeds(client):
     assert body["user"]["phone_number"] == phone
     assert body["tokens"]["access_token"]
     _cleanup([email], [phone])
+
+
+def test_login_with_firebase_id_token_succeeds(client):
+    phone = _next_phone()
+    email = _next_email()
+    assert _register(client, phone, email=email)["status"] == 200
+    resp = client.post("/api/v1/auth/login", json={"id_token": phone})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["user"]["phone_number"] == phone
+    assert body["tokens"]["access_token"]
+    _cleanup([email], [phone])
+
+
+def test_login_with_firebase_id_token_unknown_phone(client):
+    resp = client.post(
+        "/api/v1/auth/login", json={"id_token": "+916000000000"}
+    )
+    assert resp.status_code == 401
+
+
+def test_login_with_invalid_firebase_id_token(client):
+    resp = client.post("/api/v1/auth/login", json={"id_token": "invalid-token"})
+    assert resp.status_code == 401
 
 
 def test_login_incorrect_password(client):

@@ -21,15 +21,17 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def _mock_msg91_verify(monkeypatch):
-    async def _fake_verify_otp(req_id: str, otp: str) -> str:
-        return req_id
+def _mock_firebase(monkeypatch):
+    from app.core.exceptions import UnauthorizedException
 
-    async def _fake_verify(access_token: str) -> dict:
-        return {"mobile": access_token}
+    def _fake_verify_id_token(id_token: str) -> dict:
+        if id_token == "invalid-token":
+            raise UnauthorizedException("Invalid or expired Firebase ID token")
+        return {"uid": f"uid-{id_token}", "phone_number": id_token}
 
-    monkeypatch.setattr("app.services.auth_service.verify_otp", _fake_verify_otp)
-    monkeypatch.setattr("app.services.auth_service.verify_access_token", _fake_verify)
+    monkeypatch.setattr(
+        "app.services.auth_service.firebase_verify_id_token", _fake_verify_id_token
+    )
 
 
 def _psycopg_url() -> str:
@@ -55,10 +57,7 @@ def _register(client, phone: str) -> str:
             "full_name": "OTP Test User",
             "email": email,
             "password": "StrongPass123!",
-            "confirm_password": "StrongPass123!",
-            "phone_number": phone,
-            "otp": "123456",
-            "req_id": phone,
+            "id_token": phone,
         },
     )
     assert resp.status_code == 200, resp.text

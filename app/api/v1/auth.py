@@ -41,6 +41,7 @@ async def login(body: LoginRequest, request: Request, db: DBSession):
         email=body.email,
         phone_number=body.phone_number,
         password=body.password,
+        id_token=body.id_token,
         ip_address=ip,
         user_agent=ua,
     )
@@ -83,10 +84,8 @@ async def register(body: RegisterRequest, request: Request, db: DBSession):
         full_name=body.full_name,
         email=body.email,
         password=body.password,
-        phone_number=body.phone_number,
         role=body.role,
-        otp=body.otp,
-        req_id=body.req_id,
+        id_token=body.id_token,
         ip_address=ip,
         user_agent=ua,
     )
@@ -99,6 +98,9 @@ async def register(body: RegisterRequest, request: Request, db: DBSession):
 @router.post("/otp/send-register", response_model=SendRegisterOtpResponse)
 async def send_register_otp(body: OtpRequest, request: Request, db: DBSession):
     """Send an MSG91 OTP for new-user registration.
+
+    DEPRECATED: the registration flow now uses Firebase Phone
+    Authentication. Kept for backward compatibility only.
 
     The OTP is generated, delivered, and stored by MSG91 — never by this
     server. Returns a ``req_id`` that must be passed along with the OTP to

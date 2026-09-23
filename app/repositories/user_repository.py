@@ -27,6 +27,12 @@ class UserRepository(BaseRepository[User]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_firebase_uid(self, firebase_uid: str) -> User | None:
+        result = await self.session.execute(
+            select(User).where(User.firebase_uid == firebase_uid)
+        )
+        return result.scalar_one_or_none()
+
     async def get_active_by_email(self, email: str) -> User | None:
         result = await self.session.execute(
             select(User).where(User.email == email, User.is_active.is_(True))

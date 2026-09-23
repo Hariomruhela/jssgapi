@@ -87,10 +87,7 @@ def _register_member(
             "full_name": "Plain Member",
             "email": email,
             "password": PASSWORD,
-            "confirm_password": PASSWORD,
-            "phone_number": phone,
-            "otp": "123456",
-            "req_id": phone,
+            "id_token": phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -113,19 +110,18 @@ def client():
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _mock_msg91_verify():
+def _mock_firebase():
     from unittest import mock
 
-    async def _fake_verify_otp(req_id: str, otp: str) -> str:
-        return req_id
+    from app.core.exceptions import UnauthorizedException
 
-    async def _fake_verify(access_token: str) -> dict:
-        return {"mobile": access_token}
+    def _fake_verify_id_token(id_token: str) -> dict:
+        if id_token == "invalid-token":
+            raise UnauthorizedException("Invalid or expired Firebase ID token")
+        return {"uid": f"uid-{id_token}", "phone_number": id_token}
 
     with mock.patch(
-        "app.services.auth_service.verify_otp", _fake_verify_otp
-    ), mock.patch(
-        "app.services.auth_service.verify_access_token", _fake_verify
+        "app.services.auth_service.firebase_verify_id_token", _fake_verify_id_token
     ):
         yield
 
@@ -356,10 +352,7 @@ def test_signup_role_handling(client):
             "full_name": "No Role",
             "email": f"norole_{int(time.time() * 1000)}@test.local",
             "password": PASSWORD,
-            "confirm_password": PASSWORD,
-            "phone_number": member_phone,
-            "otp": "123456",
-            "req_id": member_phone,
+            "id_token": member_phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -372,11 +365,8 @@ def test_signup_role_handling(client):
             "full_name": "Admin Signup",
             "email": f"adminsignup_{int(time.time() * 1000)}@test.local",
             "password": PASSWORD,
-            "confirm_password": PASSWORD,
-            "phone_number": admin_phone,
             "role": "Admin",
-            "otp": "123456",
-            "req_id": admin_phone,
+            "id_token": admin_phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -389,11 +379,8 @@ def test_signup_role_handling(client):
             "full_name": "Empty Role",
             "email": f"emptyrole_{int(time.time() * 1000)}@test.local",
             "password": PASSWORD,
-            "confirm_password": PASSWORD,
-            "phone_number": empty_phone,
             "role": "",
-            "otp": "123456",
-            "req_id": empty_phone,
+            "id_token": empty_phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -406,11 +393,8 @@ def test_signup_role_handling(client):
             "full_name": "Bad Role",
             "email": f"badrole_{int(time.time() * 1000)}@test.local",
             "password": PASSWORD,
-            "confirm_password": PASSWORD,
-            "phone_number": bad_phone,
             "role": "VIEWER",
-            "otp": "123456",
-            "req_id": bad_phone,
+            "id_token": bad_phone,
         },
     )
     assert resp.status_code == 400, resp.text
@@ -429,10 +413,7 @@ def test_login_response_includes_role(client):
             "full_name": "Role Member",
             "email": f"rolemember_{int(time.time() * 1000)}@test.local",
             "password": PASSWORD,
-            "confirm_password": PASSWORD,
-            "phone_number": member_phone,
-            "otp": "123456",
-            "req_id": member_phone,
+            "id_token": member_phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -466,10 +447,7 @@ def test_logout_still_works(client):
             "full_name": "Logout Probe",
             "email": email,
             "password": PASSWORD,
-            "confirm_password": PASSWORD,
-            "phone_number": phone,
-            "otp": "123456",
-            "req_id": phone,
+            "id_token": phone,
         },
     )
     assert resp.status_code == 200, resp.text

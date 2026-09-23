@@ -25,7 +25,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.integrations.msg91 import direct_mode, verify_access_token, verify_otp
+from app.integrations.firebase import verify_id_token as firebase_verify_id_token
 from app.integrations.msg91 import send_otp as msg91_send_otp
 from app.integrations.sms import is_dev_sms, send_otp
 from app.models.otp_code import OtpCode
@@ -55,6 +55,10 @@ class AuthService:
     ) -> str:
         """Send an MSG91 OTP for the registration flow.
 
+        DEPRECATED: the registration flow now uses Firebase Phone
+        Authentication. This MSG91 path is kept for backward compatibility
+        only and will be removed once clients migrate.
+
         Only numbers that are not already registered get an OTP. The OTP is
         generated, delivered, and stored by MSG91 — this server never sees or
         stores it. Returns MSG91's ``req_id``.
@@ -81,51 +85,57 @@ class AuthService:
         *,
         full_name: str,
         email: str | None,
-        password: str,
-        phone_number: str,
+        id_token: str,
+        password: str | None = None,
         role: str | None = None,
-        otp: str,
-        req_id: str,
         ip_address: str | None = None,
         user_agent: str | None = None,
     ) -> dict:
+        """Register a user whose phone was verified by Firebase.
+
+        Only the Admin SDK's decoded token claims are trusted: the phone
+        number and uid come from Firebase, never from the client. The
+        backend never sends, generates, or verifies an OTP itself.
+        """
         full_name = full_name.strip()
         if not full_name:
             raise BadRequestException("Full name cannot be empty")
         email = email.strip().lower() if email else None
 
-        phone_normalized = normalize_phone_number(phone_number)
-        verified_mobile: str | None
-        if direct_mode():
-            verified_mobile = await verify_otp(req_id, otp, mobile=phone_normalized)
-        else:
-            access_token = await verify_otp(req_id, otp)
-            verified = await verify_access_token(access_token)
-            verified_mobile = verified.get("mobile") if verified else None
-        if not verified_mobile:
+        claims = firebase_verify_id_token(id_token)
+        firebase_uid = claims.get("uid")
+        verified_phone = claims.get("phone_number")
+        if not firebase_uid or not verified_phone:
             raise UnauthorizedException(
-                "Mobile number verification failed. Please verify your OTP again."
+                "Firebase token does not contain a verified phone number"
             )
-        verified_phone = normalize_phone_number(str(verified_mobile))
-        if verified_phone != phone_normalized:
-            raise UnauthorizedException(
-                "Verified mobile number does not match the provided phone number"
+        verified_phone = normalize_phone_number(str(verified_phone))
+
+        existing = await self.users.get_by_phone(verified_phone)
+        if existing is not None:
+            if not existing.is_active:
+                raise UnauthorizedException("Account is not active")
+            return await self._login_existing_firebase_user(
+                existing,
+                firebase_uid,
+                ip_address=ip_address,
+                user_agent=user_agent,
             )
 
         if email and await self.users.get_by_email(email):
             raise AlreadyExistsException("An account with this email already exists")
-        if await self.users.get_by_phone(phone_normalized):
-            raise AlreadyExistsException("An account with this phone number exists")
 
         role_row = await self._resolve_registration_role(role)
         if role_row is None:
             raise BadRequestException("Role is not configured yet")
 
+        user_password = password or secrets.token_urlsafe(32)
         user = await self.users.create(
             email=email,
             full_name=full_name,
-            phone_number=phone_normalized,
-            password_hash=hash_password(password),
+            phone_number=verified_phone,
+            firebase_uid=firebase_uid,
+            password_hash=hash_password(user_password),
             is_active=True,
             is_phone_verified=True,
             role_id=role_row.id,
@@ -140,7 +150,7 @@ class AuthService:
             first_name=first_name,
             last_name=last_name,
             contact_email=email,
-            contact_phone=phone_normalized,
+            contact_phone=verified_phone,
             membership_status=MemberStatus.PENDING.value,
         )
 
@@ -152,6 +162,27 @@ class AuthService:
         )
         await self.session.flush()
 
+        return await self._issue_tokens(user, ip_address, user_agent)
+
+    async def _login_existing_firebase_user(
+        self,
+        user: User,
+        firebase_uid: str | None,
+        *,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> dict:
+        user.is_phone_verified = True
+        user.last_login_at = datetime.now(UTC)
+        if firebase_uid and not user.firebase_uid:
+            user.firebase_uid = firebase_uid
+        await self.audit.log(
+            AuditAction.LOGIN,
+            user_id=user.id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        await self.session.flush()
         return await self._issue_tokens(user, ip_address, user_agent)
 
     async def _resolve_registration_role(self, role: str | None) -> Role:
@@ -177,11 +208,35 @@ class AuthService:
         *,
         email: str | None = None,
         phone_number: str | None = None,
-        password: str,
+        password: str | None = None,
+        id_token: str | None = None,
         ip_address: str | None = None,
         user_agent: str | None = None,
     ) -> dict:
+        if id_token:
+            claims = firebase_verify_id_token(id_token)
+            firebase_uid = claims.get("uid")
+            verified_phone = claims.get("phone_number")
+            if not firebase_uid or not verified_phone:
+                raise UnauthorizedException(
+                    "Firebase token does not contain a verified phone number"
+                )
+            normalized = normalize_phone_number(str(verified_phone))
+            user = await self.users.get_active_by_phone(normalized)
+            if user is None:
+                raise UnauthorizedException(
+                    "Invalid phone number or password"
+                )
+            return await self._login_existing_firebase_user(
+                user,
+                firebase_uid,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+
         if not email and not phone_number:
+            raise UnauthorizedException("Invalid email or phone number or password")
+        if password is None:
             raise UnauthorizedException("Invalid email or phone number or password")
 
         if phone_number:
