@@ -14,6 +14,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # binding itself, so these can safely be dropped.
 _LIBPQ_ONLY_QUERY_PARAMS = {"sslmode", "channel_binding", "pgbouncer"}
 
+FIREBASE_PROJECT_ID = "jssg-7e2b0"
+
 
 def _async_database_url(url: str) -> str:
     """Force the SQLAlchemy async engine to use an async driver.
@@ -123,9 +125,14 @@ class Settings(BaseSettings):
     cloudflare_r2_public_url: str = ""
 
     # Firebase
-    firebase_project_id: str = ""
+    firebase_project_id: str = FIREBASE_PROJECT_ID
     firebase_private_key: str = ""
     firebase_client_email: str = ""
+
+    @field_validator("firebase_project_id", mode="before")
+    @classmethod
+    def _pin_firebase_project_id(cls, value: object) -> str:
+        return FIREBASE_PROJECT_ID
 
     # Payment
     payment_provider: str = ""

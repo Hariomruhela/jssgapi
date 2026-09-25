@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.user import UserOut
 from app.utils.validators import (
@@ -12,10 +12,13 @@ from app.utils.validators import (
 
 
 class RegisterRequest(BaseModel):
-    full_name: str = Field(min_length=2, max_length=255)
-    email: str | None = Field(default=None, max_length=255)
-    password: str | None = Field(default=None, min_length=8, max_length=128)
-    role: str | None = Field(default=None, max_length=50)
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str = Field(min_length=1, max_length=255)
+    email: str | None = Field(max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+    phone_number: str = Field(pattern=r"^[6-9][0-9]{9}$")
+    confirm_password: str = Field(min_length=8, max_length=128)
     id_token: str = Field(min_length=1, max_length=4096)
 
     @field_validator("id_token", mode="before")
@@ -38,13 +41,15 @@ class RegisterRequest(BaseModel):
                 return None
         return value
 
-    def model_post_init(self, __context) -> None:
+    @model_validator(mode="after")
+    def _validate_registration_fields(self) -> RegisterRequest:
         if not self.full_name.strip():
             raise ValueError("Full name cannot be empty")
         if self.email is not None and not validate_email(self.email):
             raise ValueError("Invalid email address")
-        if self.password is not None:
-            validate_password(self.password)
+        if self.password != self.confirm_password:
+            raise ValueError("Passwords do not match")
+        return self
 
 
 class LoginRequest(BaseModel):

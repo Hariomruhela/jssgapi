@@ -57,6 +57,8 @@ def _register(client, phone: str) -> str:
             "full_name": "OTP Test User",
             "email": email,
             "password": "StrongPass123!",
+            "phone_number": phone.removeprefix("+91"),
+            "confirm_password": "StrongPass123!",
             "id_token": phone,
         },
     )

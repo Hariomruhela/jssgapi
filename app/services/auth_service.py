@@ -85,9 +85,9 @@ class AuthService:
         *,
         full_name: str,
         email: str | None,
+        password: str,
+        phone_number: str,
         id_token: str,
-        password: str | None = None,
-        role: str | None = None,
         ip_address: str | None = None,
         user_agent: str | None = None,
     ) -> dict:
@@ -102,14 +102,19 @@ class AuthService:
             raise BadRequestException("Full name cannot be empty")
         email = email.strip().lower() if email else None
 
+        provided_phone = normalize_phone_number(phone_number)
         claims = firebase_verify_id_token(id_token)
-        firebase_uid = claims.get("uid")
+        firebase_uid = claims.get("uid") or claims.get("sub") or claims.get("user_id")
         verified_phone = claims.get("phone_number")
         if not firebase_uid or not verified_phone:
             raise UnauthorizedException(
                 "Firebase token does not contain a verified phone number"
             )
         verified_phone = normalize_phone_number(str(verified_phone))
+        if verified_phone != provided_phone:
+            raise UnauthorizedException(
+                "Verified phone number does not match the provided phone number"
+            )
 
         existing = await self.users.get_by_phone(verified_phone)
         if existing is not None:
@@ -125,17 +130,16 @@ class AuthService:
         if email and await self.users.get_by_email(email):
             raise AlreadyExistsException("An account with this email already exists")
 
-        role_row = await self._resolve_registration_role(role)
+        role_row = await self._resolve_registration_role(None)
         if role_row is None:
             raise BadRequestException("Role is not configured yet")
 
-        user_password = password or secrets.token_urlsafe(32)
         user = await self.users.create(
             email=email,
             full_name=full_name,
             phone_number=verified_phone,
             firebase_uid=firebase_uid,
-            password_hash=hash_password(user_password),
+            password_hash=hash_password(password),
             is_active=True,
             is_phone_verified=True,
             role_id=role_row.id,

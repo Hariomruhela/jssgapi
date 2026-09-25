@@ -87,6 +87,8 @@ def _register_member(
             "full_name": "Plain Member",
             "email": email,
             "password": PASSWORD,
+            "phone_number": phone.removeprefix("+91"),
+            "confirm_password": PASSWORD,
             "id_token": phone,
         },
     )
@@ -342,64 +344,35 @@ def _delete_users_by_phone(engine, phones: list[str]) -> None:
         session.commit()
 
 
-def test_signup_role_handling(client):
+def test_signup_rejects_role_field(client):
     engine = create_engine(_psycopg_url(), poolclass=NullPool)
 
     member_phone = _next_phone()
-    resp = client.post(
-        "/api/v1/auth/register",
-        json={
-            "full_name": "No Role",
-            "email": f"norole_{int(time.time() * 1000)}@test.local",
-            "password": PASSWORD,
-            "id_token": member_phone,
-        },
-    )
+    body = {
+        "full_name": "No Role",
+        "email": f"norole_{int(time.time() * 1000)}@test.local",
+        "password": PASSWORD,
+        "phone_number": member_phone.removeprefix("+91"),
+        "confirm_password": PASSWORD,
+        "id_token": member_phone,
+    }
+    resp = client.post("/api/v1/auth/register", json=body)
     assert resp.status_code == 200, resp.text
     assert resp.json()["user"]["role"]["name"] == "MEMBER"
 
-    admin_phone = _next_phone()
-    resp = client.post(
-        "/api/v1/auth/register",
-        json={
-            "full_name": "Admin Signup",
-            "email": f"adminsignup_{int(time.time() * 1000)}@test.local",
-            "password": PASSWORD,
-            "role": "Admin",
-            "id_token": admin_phone,
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["user"]["role"]["name"] == "ADMIN"
+    role_phone = _next_phone()
+    role_body = {
+        **body,
+        "full_name": "Role Field",
+        "email": f"rolefield_{int(time.time() * 1000)}@test.local",
+        "phone_number": role_phone.removeprefix("+91"),
+        "id_token": role_phone,
+        "role": "Admin",
+    }
+    resp = client.post("/api/v1/auth/register", json=role_body)
+    assert resp.status_code == 422
 
-    empty_phone = _next_phone()
-    resp = client.post(
-        "/api/v1/auth/register",
-        json={
-            "full_name": "Empty Role",
-            "email": f"emptyrole_{int(time.time() * 1000)}@test.local",
-            "password": PASSWORD,
-            "role": "",
-            "id_token": empty_phone,
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["user"]["role"]["name"] == "MEMBER"
-
-    bad_phone = _next_phone()
-    resp = client.post(
-        "/api/v1/auth/register",
-        json={
-            "full_name": "Bad Role",
-            "email": f"badrole_{int(time.time() * 1000)}@test.local",
-            "password": PASSWORD,
-            "role": "VIEWER",
-            "id_token": bad_phone,
-        },
-    )
-    assert resp.status_code == 400, resp.text
-
-    _delete_users_by_phone(engine, [member_phone, admin_phone, empty_phone, bad_phone])
+    _delete_users_by_phone(engine, [member_phone])
     engine.dispose()
 
 
@@ -413,6 +386,8 @@ def test_login_response_includes_role(client):
             "full_name": "Role Member",
             "email": f"rolemember_{int(time.time() * 1000)}@test.local",
             "password": PASSWORD,
+            "phone_number": member_phone.removeprefix("+91"),
+            "confirm_password": PASSWORD,
             "id_token": member_phone,
         },
     )
@@ -447,6 +422,8 @@ def test_logout_still_works(client):
             "full_name": "Logout Probe",
             "email": email,
             "password": PASSWORD,
+            "phone_number": phone.removeprefix("+91"),
+            "confirm_password": PASSWORD,
             "id_token": phone,
         },
     )

@@ -61,16 +61,17 @@ def _register(
     client,
     phone: str,
     email: object = _MISSING,
-    password: str = "V3ryStr0ng!Pass",
+    password: str | None = "V3ryStr0ng!Pass",
     id_token: str | None = None,
 ) -> dict:
     body: dict[str, object] = {
         "full_name": "Auth Test User",
+        "email": None if email is _MISSING else email,
         "password": password,
+        "phone_number": phone.removeprefix("+91"),
+        "confirm_password": password,
         "id_token": phone if id_token is None else id_token,
     }
-    if email is not _MISSING:
-        body["email"] = email
     resp = client.post("/api/v1/auth/register", json=body)
     return {"status": resp.status_code, "body": resp.json()}
 
@@ -145,11 +146,10 @@ def test_register_multiple_users_without_email_succeeds(client):
     _cleanup([], phones)
 
 
-def test_register_without_password_succeeds(client):
+def test_register_without_password_is_rejected(client):
     phone = _next_phone()
     result = _register(client, phone, password=None)
-    assert result["status"] == 200, result["body"]
-    assert result["body"]["tokens"]["access_token"]
+    assert result["status"] == 422
     _cleanup([], [phone])
 
 
@@ -198,7 +198,13 @@ def test_register_token_without_phone(client):
 def test_register_missing_id_token_field(client):
     resp = client.post(
         "/api/v1/auth/register",
-        json={"full_name": "Auth Test User", "password": "V3ryStr0ng!Pass"},
+        json={
+            "full_name": "Auth Test User",
+            "email": None,
+            "password": "V3ryStr0ng!Pass",
+            "phone_number": "8770948303",
+            "confirm_password": "V3ryStr0ng!Pass",
+        },
     )
     assert resp.status_code == 422
 
