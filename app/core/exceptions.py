@@ -26,6 +26,18 @@ class NotFoundException(AppException):
         )
 
 
+class UserNotFoundException(AppException):
+    def __init__(
+        self,
+        detail: str = "इस मोबाइल नंबर से खाता नहीं मिला। कृपया पहले पंजीकरण करें।",
+    ):
+        super().__init__(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=detail,
+            error_code="USER_NOT_FOUND",
+        )
+
+
 class AlreadyExistsException(AppException):
     def __init__(self, detail: str):
         super().__init__(

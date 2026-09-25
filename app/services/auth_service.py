@@ -17,6 +17,7 @@ from app.core.exceptions import (
     ForbiddenException,
     NotFoundException,
     UnauthorizedException,
+    UserNotFoundException,
 )
 from app.core.security import (
     create_access_token,
@@ -118,13 +119,8 @@ class AuthService:
 
         existing = await self.users.get_by_phone(verified_phone)
         if existing is not None:
-            if not existing.is_active:
-                raise UnauthorizedException("Account is not active")
-            return await self._login_existing_firebase_user(
-                existing,
-                firebase_uid,
-                ip_address=ip_address,
-                user_agent=user_agent,
+            raise AlreadyExistsException(
+                "An account with this phone number already exists"
             )
 
         if email and await self.users.get_by_email(email):
@@ -266,6 +262,38 @@ class AuthService:
             user_agent=user_agent,
         )
         return await self._issue_tokens(user, ip_address, user_agent)
+
+    async def login_with_firebase_otp(
+        self,
+        *,
+        id_token: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> dict:
+        claims = firebase_verify_id_token(id_token)
+        firebase_uid = claims.get("uid") or claims.get("sub") or claims.get("user_id")
+        verified_phone = claims.get("phone_number")
+        if not firebase_uid or not verified_phone:
+            raise UnauthorizedException(
+                "Firebase token does not contain a verified phone number"
+            )
+
+        normalized = normalize_phone_number(str(verified_phone))
+        local_phone = normalized.removeprefix("+91")
+        user = await self.users.get_by_phone(local_phone)
+        if user is None and local_phone != normalized:
+            user = await self.users.get_by_phone(normalized)
+        if user is None:
+            raise UserNotFoundException()
+        if not user.is_active:
+            raise UnauthorizedException("Account is not active")
+
+        return await self._login_existing_firebase_user(
+            user,
+            firebase_uid,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
 
     async def oauth2_admin_token(
         self,

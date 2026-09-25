@@ -153,13 +153,17 @@ def test_register_without_password_is_rejected(client):
     _cleanup([], [phone])
 
 
-def test_register_duplicate_phone_logs_existing_user_in(client):
+def test_register_duplicate_phone_is_rejected(client):
     phone = _next_phone()
     first = _register(client, phone, email=_next_email())
     assert first["status"] == 200, first["body"]
     second = _register(client, phone, email=_next_email())
-    assert second["status"] == 200, second["body"]
-    assert second["body"]["tokens"]["access_token"]
+    assert second["status"] == 409
+    assert second["body"] == {
+        "success": False,
+        "message": "An account with this phone number already exists",
+        "error_code": "ALREADY_EXISTS",
+    }
     _cleanup([], [phone])
 
 
@@ -266,6 +270,68 @@ def test_login_with_firebase_id_token_unknown_phone(client):
         "/api/v1/auth/login", json={"id_token": "+916000000000"}
     )
     assert resp.status_code == 401
+
+
+def test_login_otp_with_firebase_id_token_succeeds_and_refreshes(client):
+    phone = _next_phone()
+    email = _next_email()
+    assert _register(client, phone, email=email)["status"] == 200
+    resp = client.post("/api/v1/auth/login/otp", json={"id_token": phone})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["user"]["phone_number"] == phone
+    assert body["user"]["email"] == email
+    assert body["tokens"]["access_token"]
+    assert body["tokens"]["refresh_token"]
+
+    refresh = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": body["tokens"]["refresh_token"]},
+    )
+    assert refresh.status_code == 200, refresh.text
+    _cleanup([email], [phone])
+
+
+def test_login_otp_unknown_phone_returns_registration_message(client):
+    resp = client.post(
+        "/api/v1/auth/login/otp", json={"id_token": _next_phone()}
+    )
+    assert resp.status_code == 404
+    assert resp.json() == {
+        "success": False,
+        "message": "इस मोबाइल नंबर से खाता नहीं मिला। कृपया पहले पंजीकरण करें।",
+        "error_code": "USER_NOT_FOUND",
+    }
+
+
+def test_login_otp_rejects_password_field(client):
+    resp = client.post(
+        "/api/v1/auth/login/otp",
+        json={"id_token": _next_phone(), "password": "V3ryStr0ng!Pass"},
+    )
+    assert resp.status_code == 422
+
+
+def test_login_otp_with_invalid_firebase_id_token(client):
+    resp = client.post(
+        "/api/v1/auth/login/otp", json={"id_token": "invalid-token"}
+    )
+    assert resp.status_code == 401
+    assert resp.json() == {
+        "success": False,
+        "message": "Invalid or expired Firebase ID token",
+        "error_code": "UNAUTHORIZED",
+    }
+
+
+def test_login_otp_token_without_phone(client):
+    resp = client.post(
+        "/api/v1/auth/login/otp", json={"id_token": "no-phone-token"}
+    )
+    assert resp.status_code == 401
+    assert resp.json()["message"] == (
+        "Firebase token does not contain a verified phone number"
+    )
 
 
 def test_login_with_invalid_firebase_id_token(client):

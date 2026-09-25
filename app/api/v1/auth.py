@@ -15,6 +15,7 @@ from app.schemas.auth import (
     LoginRequest,
     LogoutRequest,
     OAuth2TokenResponse,
+    OtpLoginRequest,
     OtpRequest,
     OtpVerifyRequest,
     RefreshRequest,
@@ -41,6 +42,20 @@ async def login(body: LoginRequest, request: Request, db: DBSession):
         email=body.email,
         phone_number=body.phone_number,
         password=body.password,
+        id_token=body.id_token,
+        ip_address=ip,
+        user_agent=ua,
+    )
+    return AuthResponse(
+        user=UserOut.model_validate(result["user"]),
+        tokens=result["tokens"],
+    )
+
+
+@router.post("/login/otp", response_model=AuthResponse)
+async def otp_login(body: OtpLoginRequest, request: Request, db: DBSession):
+    ip, ua = _request_context(request)
+    result = await AuthService(db).login_with_firebase_otp(
         id_token=body.id_token,
         ip_address=ip,
         user_agent=ua,

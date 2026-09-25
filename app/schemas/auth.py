@@ -71,6 +71,21 @@ class LoginRequest(BaseModel):
             raise ValueError("Invalid phone number")
 
 
+class OtpLoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id_token: str = Field(min_length=1, max_length=4096)
+
+    @field_validator("id_token", mode="before")
+    @classmethod
+    def _normalize_id_token(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("id_token is required")
+        return value
+
+
 class ForgotPasswordRequest(BaseModel):
     phone_number: str
     new_password: str = Field(min_length=8, max_length=128)
