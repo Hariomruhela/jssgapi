@@ -432,3 +432,104 @@ def test_forgot_password_invalid_password(client):
 def test_forgot_password_invalid_phone(client):
     result = _forgot_password(client, "12345", "Changed@99", "Changed@99")
     assert result["status"] == 422
+
+
+def test_reset_password_with_firebase_token_succeeds(client):
+    phone = _next_phone()
+    email = _next_email()
+    assert _register(client, phone, email=email)["status"] == 200
+
+    resp = client.post(
+        "/api/v1/auth/reset-password",
+        json={
+            "phone_number": phone.removeprefix("+91"),
+            "password": "Changed@99",
+            "confirm_password": "Changed@99",
+            "id_token": phone,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "success": True,
+        "message": "पासवर्ड सफलतापूर्वक बदला गया",
+    }
+
+    new_login = client.post(
+        "/api/v1/auth/login",
+        json={"phone_number": phone, "password": "Changed@99"},
+    )
+    assert new_login.status_code == 200, new_login.text
+    old_login = client.post(
+        "/api/v1/auth/login",
+        json={"phone_number": phone, "password": "V3ryStr0ng!Pass"},
+    )
+    assert old_login.status_code == 401
+    _cleanup([email], [phone])
+
+
+def test_reset_password_unknown_phone_returns_registration_message(client):
+    phone = _next_phone()
+    resp = client.post(
+        "/api/v1/auth/reset-password",
+        json={
+            "phone_number": phone.removeprefix("+91"),
+            "password": "Changed@99",
+            "confirm_password": "Changed@99",
+            "id_token": phone,
+        },
+    )
+    assert resp.status_code == 404
+    assert resp.json() == {
+        "success": False,
+        "message": "इस मोबाइल नंबर से खाता नहीं मिला। कृपया पहले पंजीकरण करें।",
+        "error_code": "USER_NOT_FOUND",
+    }
+
+
+def test_reset_password_short_password_returns_hindi_400(client):
+    phone = _next_phone()
+    resp = client.post(
+        "/api/v1/auth/reset-password",
+        json={
+            "phone_number": phone.removeprefix("+91"),
+            "password": "short",
+            "confirm_password": "short",
+            "id_token": phone,
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json() == {
+        "success": False,
+        "message": "पासवर्ड कम से कम 8 अक्षरों का होना चाहिए",
+        "error_code": "BAD_REQUEST",
+    }
+
+
+def test_reset_password_mismatch_returns_hindi_400(client):
+    phone = _next_phone()
+    resp = client.post(
+        "/api/v1/auth/reset-password",
+        json={
+            "phone_number": phone.removeprefix("+91"),
+            "password": "Changed@99",
+            "confirm_password": "Different@99",
+            "id_token": phone,
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["message"] == "पासवर्ड और पुष्टि पासवर्ड मेल नहीं खाते"
+
+
+def test_reset_password_invalid_firebase_token(client):
+    phone = _next_phone()
+    resp = client.post(
+        "/api/v1/auth/reset-password",
+        json={
+            "phone_number": phone.removeprefix("+91"),
+            "password": "Changed@99",
+            "confirm_password": "Changed@99",
+            "id_token": "invalid-token",
+        },
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error_code"] == "UNAUTHORIZED"

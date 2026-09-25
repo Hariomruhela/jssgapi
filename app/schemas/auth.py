@@ -99,6 +99,24 @@ class ForgotPasswordRequest(BaseModel):
             raise ValueError("Passwords do not match")
 
 
+class ResetPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phone_number: str = Field(min_length=1, max_length=20)
+    password: str = Field(max_length=128)
+    confirm_password: str = Field(max_length=128)
+    id_token: str = Field(min_length=1, max_length=4096)
+
+    @field_validator("phone_number", "id_token", mode="before")
+    @classmethod
+    def _normalize_strings(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("Value is required")
+        return value
+
+
 class OtpRequest(BaseModel):
     phone: str
 

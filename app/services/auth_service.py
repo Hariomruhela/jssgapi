@@ -18,6 +18,7 @@ from app.core.exceptions import (
     NotFoundException,
     UnauthorizedException,
     UserNotFoundException,
+    ValidationException,
 )
 from app.core.security import (
     create_access_token,
@@ -35,7 +36,7 @@ from app.repositories.member_repository import MemberRepository
 from app.repositories.user_repository import UserRepository
 from app.services.audit_service import AuditService
 from app.utils.helpers import hash_refresh_token
-from app.utils.validators import normalize_phone_number
+from app.utils.validators import normalize_phone_number, validate_password
 
 settings = get_settings()
 
@@ -185,6 +186,14 @@ class AuthService:
         await self.session.flush()
         return await self._issue_tokens(user, ip_address, user_agent)
 
+    async def _get_user_by_phone_forms(self, phone: str) -> User | None:
+        normalized = normalize_phone_number(phone)
+        local_phone = normalized.removeprefix("+91")
+        user = await self.users.get_by_phone(local_phone)
+        if user is None and local_phone != normalized:
+            user = await self.users.get_by_phone(normalized)
+        return user
+
     async def _resolve_registration_role(self, role: str | None) -> Role:
         if role is None or not role.strip():
             role_name = RoleName.MEMBER.value
@@ -278,11 +287,7 @@ class AuthService:
                 "Firebase token does not contain a verified phone number"
             )
 
-        normalized = normalize_phone_number(str(verified_phone))
-        local_phone = normalized.removeprefix("+91")
-        user = await self.users.get_by_phone(local_phone)
-        if user is None and local_phone != normalized:
-            user = await self.users.get_by_phone(normalized)
+        user = await self._get_user_by_phone_forms(str(verified_phone))
         if user is None:
             raise UserNotFoundException()
         if not user.is_active:
@@ -577,6 +582,61 @@ class AuthService:
         )
         await self.session.flush()
         return user
+
+    async def reset_password(
+        self,
+        *,
+        phone_number: str,
+        password: str,
+        confirm_password: str,
+        id_token: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> None:
+        claims = firebase_verify_id_token(id_token)
+        verified_phone = claims.get("phone_number")
+        if not verified_phone:
+            raise UnauthorizedException(
+                "Firebase token does not contain a verified phone number"
+            )
+
+        try:
+            verified_phone = normalize_phone_number(str(verified_phone))
+            provided_phone = normalize_phone_number(phone_number)
+        except ValidationException:
+            raise BadRequestException("मोबाइल नंबर सही नहीं है") from None
+        if verified_phone != provided_phone:
+            raise BadRequestException(
+                "मोबाइल नंबर Firebase टोकन से मेल नहीं खाता"
+            )
+
+        if len(password) < 8:
+            raise BadRequestException("पासवर्ड कम से कम 8 अक्षरों का होना चाहिए")
+        if password != confirm_password:
+            raise BadRequestException("पासवर्ड और पुष्टि पासवर्ड मेल नहीं खाते")
+        try:
+            validate_password(password)
+        except ValidationException:
+            raise BadRequestException(
+                "पासवर्ड मजबूत होना चाहिए: इसमें कम से कम एक छोटा अक्षर, "
+                "एक बड़ा अक्षर और एक अंक होना चाहिए"
+            ) from None
+
+        user = await self._get_user_by_phone_forms(verified_phone)
+        if user is None:
+            raise UserNotFoundException()
+
+        user.password_hash = hash_password(password)
+        await self.audit.log(
+            AuditAction.PASSWORD_CHANGE,
+            user_id=user.id,
+            entity_type="user",
+            entity_id=user.id,
+            details={"phone": self._mask_phone(verified_phone)},
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        await self.session.flush()
 
     async def _issue_tokens(
         self,

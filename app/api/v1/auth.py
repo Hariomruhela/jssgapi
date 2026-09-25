@@ -20,6 +20,7 @@ from app.schemas.auth import (
     OtpVerifyRequest,
     RefreshRequest,
     RegisterRequest,
+    ResetPasswordRequest,
     SendRegisterOtpResponse,
 )
 from app.schemas.user import UserOut
@@ -208,3 +209,19 @@ async def forgot_password(body: ForgotPasswordRequest, request: Request, db: DBS
         user_agent=ua,
     )
     return ok("Password updated successfully")
+
+
+@router.post("/reset-password")
+async def reset_password(
+    body: ResetPasswordRequest, request: Request, db: DBSession
+):
+    ip, ua = _request_context(request)
+    await AuthService(db).reset_password(
+        phone_number=body.phone_number,
+        password=body.password,
+        confirm_password=body.confirm_password,
+        id_token=body.id_token,
+        ip_address=ip,
+        user_agent=ua,
+    )
+    return ok("पासवर्ड सफलतापूर्वक बदला गया")
