@@ -16,6 +16,7 @@ from app.api.v1.news import router as news_router
 from app.api.v1.notifications import router as notifications_router
 from app.api.v1.payments import router as payments_router
 from app.api.v1.professional import router as professional_router
+from app.api.v1.profile import router as profile_router
 from app.api.v1.trustees import router as trustees_router
 from app.api.v1.users import router as users_router
 
@@ -32,6 +33,7 @@ for resource_router in [
     news_router,
     notifications_router,
     media_router,
+    profile_router,
     advertisements_router,
     fees_router,
     payments_router,

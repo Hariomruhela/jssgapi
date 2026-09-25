@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     Boolean,
@@ -12,8 +12,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.constants import MemberStatus
@@ -54,6 +55,9 @@ class Member(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
     blood_group: Mapped[str | None] = mapped_column(String(10), nullable=True)
     profile_photo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    profile_data: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
 
     contact_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     contact_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)

@@ -38,6 +38,15 @@ class UserNotFoundException(AppException):
         )
 
 
+class ProfileNotFoundException(AppException):
+    def __init__(self, detail: str = "प्रोफाइल नहीं मिला"):
+        super().__init__(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=detail,
+            error_code="PROFILE_NOT_FOUND",
+        )
+
+
 class AlreadyExistsException(AppException):
     def __init__(self, detail: str):
         super().__init__(
