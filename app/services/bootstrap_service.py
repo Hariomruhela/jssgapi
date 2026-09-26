@@ -11,6 +11,7 @@ from app.core.permissions import ROLE_PERMISSIONS, Permission
 from app.core.security import hash_password
 from app.models.user import Permission as PermissionModel
 from app.models.user import Role, RolePermission, User
+from app.services.schema_guard import ensure_schema, report_missing_tables
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,17 @@ async def _create_default_super_admin(
 
 
 async def bootstrap_app(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    async with session_factory() as session:
+        try:
+            # Reconcile the live schema before anything reads it. Vercel has no
+            # migration step, so a deployed column can be missing in the
+            # database; this repairs it instead of failing every request.
+            await report_missing_tables(session)
+            await ensure_schema(session)
+        except Exception:
+            await session.rollback()
+            logger.exception("Schema guard failed")
+
     async with session_factory() as session:
         try:
             permission_models = await _seed_permissions(session)
