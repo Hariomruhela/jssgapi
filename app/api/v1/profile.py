@@ -76,6 +76,7 @@ async def upload_profile_photo(
             mime_type=mime_type,
             ip_address=ip_address,
             user_agent=user_agent,
+            base_url=str(request.base_url),
         )
     except (BadRequestException, ValidationException):
         return JSONResponse(

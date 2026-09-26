@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,7 @@ from app.core.exceptions import BadRequestException
 from app.models.media import Media
 from app.repositories.media_repository import MediaRepository
 from app.services.audit_service import AuditService
+from app.services.media_storage import StorageBackend, get_storage
 from app.utils.file_upload import (
     build_object_key,
     validate_extension,
@@ -17,60 +19,38 @@ from app.utils.file_upload import (
     validate_mime_type,
 )
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
+#: Path that actually streams the bytes, relative to the API root.
+MEDIA_CONTENT_PATH = "/api/v1/media/{media_id}/content"
 
-class CloudflareR2Client:
-    """Thin boto3 wrapper. Falls back to dev-mode when R2 is not configured."""
 
-    def __init__(self) -> None:
-        self.endpoint = settings.cloudflare_r2_endpoint
-        self.access_key = settings.cloudflare_r2_access_key
-        self.secret_key = settings.cloudflare_r2_secret_key
-        self.bucket = settings.cloudflare_r2_bucket
-        self.public_url = settings.cloudflare_r2_public_url
-        self.available = bool(
-            self.endpoint and self.access_key and self.secret_key and self.bucket
-        )
+def build_media_url(media_id: uuid.UUID, base_url: str | None = None) -> str:
+    """Absolute URL the API itself serves media from.
 
-    def _client(self):
-        import boto3
+    ``base_url`` normally comes from the incoming request, so the URL stays
+    correct on any deployment domain. Falls back to ``PUBLIC_BASE_URL`` and
+    finally to a relative path.
+    """
+    path = MEDIA_CONTENT_PATH.format(media_id=media_id)
+    base = (base_url or settings.public_base_url or "").rstrip("/")
+    return f"{base}{path}" if base else path
 
-        return boto3.client(
-            "s3",
-            endpoint_url=self.endpoint,
-            aws_access_key_id=self.access_key,
-            aws_secret_access_key=self.secret_key,
-            region_name="auto",
-        )
 
-    def upload_bytes(self, object_key: str, data: bytes, mime_type: str) -> str:
-        if not self.available:
-            return f"/dev-media/{object_key}"
-        self._client().put_object(
-            Bucket=self.bucket,
-            Key=object_key,
-            Body=data,
-            ContentType=mime_type,
-        )
-        if self.public_url:
-            return f"{self.public_url.rstrip('/')}/{object_key}"
-        return f"/{object_key}"
-
-    def delete_object(self, object_key: str) -> None:
-        if not self.available:
-            return
-        try:
-            self._client().delete_object(Bucket=self.bucket, Key=object_key)
-        except Exception:
-            pass
+def _is_absolute(url: str) -> bool:
+    return url.startswith("https://") or url.startswith("http://")
 
 
 class MediaService:
-    def __init__(self, session: AsyncSession):
+    def __init__(
+        self,
+        session: AsyncSession,
+        storage: StorageBackend | None = None,
+    ):
         self.session = session
         self.repo = MediaRepository(session)
-        self.storage = CloudflareR2Client()
+        self.storage = storage or get_storage()
         self.audit = AuditService(session)
 
     async def upload(
@@ -87,6 +67,7 @@ class MediaService:
         uploaded_by: uuid.UUID | None = None,
         ip_address: str | None = None,
         user_agent: str | None = None,
+        base_url: str | None = None,
     ) -> Media:
         category = validate_mime_type(mime_type)
         validate_extension(file_name, category)
@@ -101,7 +82,9 @@ class MediaService:
         }[category]
 
         object_key = build_object_key(category, file_name, owner_id)
-        url = self.storage.upload_bytes(object_key, content, mime_type)
+        # Raises rather than silently dropping the bytes, so a failed upload can
+        # never be reported as a success with an unusable URL.
+        storage_url = self.storage.upload_bytes(object_key, content, mime_type)
 
         media = await self.repo.create(
             owner_type=owner_type,
@@ -111,12 +94,21 @@ class MediaService:
             mime_type=mime_type,
             file_size=len(content),
             r2_object_key=object_key,
-            url=url,
+            url="",
             width=width,
             height=height,
             is_public=is_public,
             uploaded_by=uploaded_by,
         )
+
+        # Prefer a real CDN/public URL when the backend has one, otherwise
+        # point at the route that streams the bytes.
+        media.url = (
+            storage_url
+            if _is_absolute(storage_url)
+            else build_media_url(media.id, base_url)
+        )
+
         await self.audit.log(
             AuditAction.MEDIA_UPLOAD,
             user_id=uploaded_by,
@@ -128,6 +120,9 @@ class MediaService:
         )
         await self.session.flush()
         return media
+
+    def read(self, media: Media) -> bytes:
+        return self.storage.read_bytes(media.r2_object_key)
 
     async def delete(
         self,

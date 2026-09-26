@@ -124,6 +124,10 @@ class Settings(BaseSettings):
     cloudflare_r2_bucket: str = ""
     cloudflare_r2_public_url: str = ""
 
+    # Absolute base used to build media URLs when the request base is not
+    # available (e.g. background jobs). Leave empty to derive it per request.
+    public_base_url: str = ""
+
     # Firebase
     firebase_project_id: str = FIREBASE_PROJECT_ID
     firebase_private_key: str = ""

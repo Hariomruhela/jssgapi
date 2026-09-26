@@ -92,3 +92,12 @@ class ValidationException(AppException):
             detail=detail,
             error_code="VALIDATION_ERROR",
         )
+
+
+class ServiceUnavailableException(AppException):
+    def __init__(self, detail: str, error_code: str = "SERVICE_UNAVAILABLE"):
+        super().__init__(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=detail,
+            error_code=error_code,
+        )

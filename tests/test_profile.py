@@ -14,6 +14,25 @@ from app.models.member import Member
 from app.models.user import User
 
 
+class _CdnStorage:
+    """Storage backend that hands back a public CDN URL, like R2 does."""
+
+    available = True
+    serves_public_urls = True
+
+    def __init__(self, url: str):
+        self._url = url
+
+    def upload_bytes(self, object_key, data, mime_type):
+        return self._url
+
+    def read_bytes(self, object_key):
+        return b""
+
+    def delete_object(self, object_key):
+        return None
+
+
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as test_client:
@@ -330,12 +349,9 @@ def test_profile_photo_uploads_and_updates_profile(
     try:
         token = _register(client, phone)
 
-        def upload_bytes(self, object_key, data, mime_type):
-            return "https://cdn.example.test/profile-photo.jpg"
-
         monkeypatch.setattr(
-            "app.services.media_service.CloudflareR2Client.upload_bytes",
-            upload_bytes,
+            "app.services.media_service.get_storage",
+            lambda: _CdnStorage("https://cdn.example.test/profile-photo.jpg"),
         )
         response = client.post(
             "/api/v1/profile/photo",
@@ -362,12 +378,9 @@ def test_profile_photo_sanitizes_long_filenames(
     try:
         token = _register(client, phone)
 
-        def upload_bytes(self, object_key, data, mime_type):
-            return "https://cdn.example.test/long-profile-photo.jpg"
-
         monkeypatch.setattr(
-            "app.services.media_service.CloudflareR2Client.upload_bytes",
-            upload_bytes,
+            "app.services.media_service.get_storage",
+            lambda: _CdnStorage("https://cdn.example.test/long-profile-photo.jpg"),
         )
         response = client.post(
             "/api/v1/profile/photo",
@@ -380,6 +393,42 @@ def test_profile_photo_sanitizes_long_filenames(
         )
     finally:
         _cleanup([phone])
+
+
+def test_profile_photo_url_actually_serves_the_image(client: TestClient):
+    """Regression guard: the stored photo_link must be a fetchable URL.
+
+    Previously an unconfigured environment returned '/dev-media/<key>' - a path
+    with no route behind it - so the photo_link was stored but never rendered.
+    """
+    phone = _next_phone()
+    try:
+        token = _register(client, phone)
+
+        response = client.post(
+            "/api/v1/profile/photo",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"photo": ("profile.jpg", b"jpeg-content", "image/jpeg")},
+        )
+        assert response.status_code == 200, response.text
+        photo_link = response.json()["photo_link"]
+        assert photo_link.startswith("http://")
+        assert "/api/v1/media/" in photo_link
+
+        # No auth needed: profile photos are public media.
+        content = client.get(photo_link[len("http://testserver") :])
+        assert content.status_code == 200, content.text
+        assert content.content == b"jpeg-content"
+        assert content.headers["content-type"] == "image/jpeg"
+        assert content.headers["x-content-type-options"] == "nosniff"
+
+        profile = client.get(
+            "/api/v1/profile", headers={"Authorization": f"Bearer {token}"}
+        ).json()["profile"]
+        assert profile["member_photo_link"] == photo_link
+    finally:
+        _cleanup([phone])
+
 
 
 def test_profile_photo_rejects_files_over_five_megabytes(client: TestClient):

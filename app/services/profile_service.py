@@ -135,6 +135,7 @@ class ProfileService:
         mime_type: str,
         ip_address: str | None = None,
         user_agent: str | None = None,
+        base_url: str | None = None,
     ) -> str:
         member = await self._get_member(user_id)
         if member is None:
@@ -149,6 +150,7 @@ class ProfileService:
             uploaded_by=user_id,
             ip_address=ip_address,
             user_agent=user_agent,
+            base_url=base_url,
         )
         member.profile_photo_url = media.url
         profile_data = dict(member.profile_data or {})
