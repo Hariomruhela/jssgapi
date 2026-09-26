@@ -257,6 +257,54 @@ def test_profile_returns_not_found_without_member(client: TestClient):
         _cleanup([phone])
 
 
+def test_profile_update_returns_not_found_without_member(client: TestClient):
+    phone = _next_phone()
+    try:
+        token = _register(client, phone)
+        _delete_members([phone])
+        response = client.put(
+            "/api/v1/profile",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"full_name": "Should Not Persist"},
+        )
+        assert response.status_code == 404
+        assert response.json() == {
+            "success": False,
+            "message": "प्रोफाइल नहीं मिला",
+            "error_code": "PROFILE_NOT_FOUND",
+        }
+    finally:
+        _cleanup([phone])
+
+
+def test_profile_update_ignores_fields_that_are_not_sent(client: TestClient):
+    phone = _next_phone()
+    try:
+        token = _register(client, phone)
+        headers = {"Authorization": f"Bearer {token}"}
+        first = client.put(
+            "/api/v1/profile",
+            headers=headers,
+            json={"address": "Keep me", "spouse_name": "Keep spouse"},
+        )
+        assert first.status_code == 200, first.text
+
+        # A payload touching one field must not null out the others.
+        second = client.put(
+            "/api/v1/profile",
+            headers=headers,
+            json={"phone_number": "+91 88888 88888"},
+        )
+        assert second.status_code == 200, second.text
+
+        profile = client.get("/api/v1/profile", headers=headers).json()["profile"]
+        assert profile["address"] == "Keep me"
+        assert profile["spouse_name"] == "Keep spouse"
+        assert profile["phone_number"] == "+91 88888 88888"
+    finally:
+        _cleanup([phone])
+
+
 def test_profile_photo_rejects_invalid_type(client: TestClient):
     phone = _next_phone()
     try:

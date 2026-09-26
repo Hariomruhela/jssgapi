@@ -165,6 +165,67 @@ pytest
 
 Use an isolated/stem database for tests; tests must never touch production services.
 
+### 7. Schema drift check (deployed environments)
+
+`asyncpg.exceptions.UndefinedColumnError: column members.profile_data does not exist`
+means the deployed database is behind the models. This happens when a revision
+gets **stamped** without its DDL actually executing — `alembic upgrade head` is
+then a silent no-op and the column is never created.
+
+Compare the models against the live schema, every column of every table:
+
+```bash
+python -m scripts.drift_check            # report, exit 1 if anything is missing
+python -m scripts.drift_check --sql      # also print idempotent DDL to fix it
+```
+
+The target database comes from `DATABASE_URL`, so the same command works against
+local, staging and production:
+
+```bash
+DATABASE_URL='postgresql://user:pass@host/db?sslmode=require' python -m scripts.drift_check
+```
+
+It separates **blocking** drift (missing tables/columns — these break queries at
+runtime) from **advisory** drift (indexes, types, nullability, extra columns),
+and reports `alembic_version` against the repo's head.
+
+**Fixing a drifted environment**
+
+```bash
+# 1. confirm what is missing
+python -m scripts.drift_check --sql
+
+# 2a. preferred - run the migration chain (all DDL is idempotent)
+alembic upgrade head
+
+# 2b. or apply the printed DDL directly
+psql "$DATABASE_URL" -c 'ALTER TABLE members ADD COLUMN IF NOT EXISTS profile_data JSONB;'
+
+# 3. verify
+python -m scripts.drift_check    # expect: no blocking drift
+```
+
+If `drift_check` reports `alembic_version table: ABSENT`, the database predates
+Alembic. `alembic upgrade head` will fail with `DuplicateTable`, so **after**
+confirming the schema matches the models, adopt the current chain instead of
+replaying it:
+
+```bash
+python -m scripts.drift_check   # must report no blocking drift first
+alembic stamp head
+```
+
+Revision `e6f1a2b3c4d5` (`repair members column drift`) is the safety net: it
+reconciles every `Member` column plus the `members` indexes, adding `NOT NULL`
+columns in three steps (add nullable → backfill → enforce) so it also succeeds
+on a populated table.
+
+> Deployment rule: never `alembic stamp` a revision you have not verified with
+> `drift_check`, and never deploy code whose migrations have not been applied to
+> the target database first. Run `python -m scripts.drift_check` in CI against a
+> database built from the migration chain to catch this before it ships.
+
 ## Docker Compose (local)
 
 ```bash
