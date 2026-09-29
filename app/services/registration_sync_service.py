@@ -542,6 +542,20 @@ class RegistrationSyncService:
                     )
                     row.phone = row.phone[:PHONE_MAX]
 
+        raw_spouse_phone = values.get("spouse_mobile", "").strip()
+        if raw_spouse_phone:
+            try:
+                values["spouse_mobile"] = normalize_phone_number(raw_spouse_phone)
+            except Exception as exc:
+                detail = getattr(exc, "detail", str(exc))
+                row.warnings.append(
+                    RowIssue(
+                        row=row_number,
+                        column="spouse_mobile",
+                        message=f"Spouse Mobile No. left as entered ({detail})",
+                    )
+                )
+
         email = values.get("email", "").strip()
         if email:
             if not validate_email(email):
@@ -1014,4 +1028,3 @@ class RegistrationSyncService:
             row.row_number,
         )
         return member
-

@@ -28,10 +28,19 @@ def _collect_permissions() -> dict[str, str]:
 
 
 async def _seed_permissions(session: AsyncSession) -> dict[str, PermissionModel]:
-    permission_models: dict[str, PermissionModel] = {}
-    for name in _collect_permissions():
-        perm = await PermissionModel.get_or_create(session, name)
-        permission_models[name] = perm
+    """Fetch every known permission, inserting only the ones that are missing.
+
+    One SELECT replaces 42 round trips, which matters on a hosted database
+    where each query costs real latency on the app's startup path.
+    """
+    wanted = _collect_permissions()
+    rows = await session.execute(
+        select(PermissionModel).where(PermissionModel.name.in_(list(wanted)))
+    )
+    permission_models: dict[str, PermissionModel] = {p.name: p for p in rows.scalars()}
+    for name in wanted:
+        if name not in permission_models:
+            permission_models[name] = await PermissionModel.get_or_create(session, name)
     return permission_models
 
 
@@ -44,21 +53,30 @@ async def _seed_roles(
         role = await Role.get_or_create(session, RoleName(role_name), description)
         role_models[role_name] = role
 
+    # Load the existing grants for every role in one query. Checking each
+    # (role, permission) pair separately meant ~250 round trips, which pushed
+    # startup past the 60s limit on a hosted Postgres.
+    rows = await session.execute(
+        select(RolePermission.role_id, RolePermission.permission_id).where(
+            RolePermission.role_id.in_([role.id for role in role_models.values()])
+        )
+    )
+    existing = {(role_id, perm_id) for role_id, perm_id in rows.all()}
+
+    for role_name, role in role_models.items():
         for perm_name in ROLE_PERMISSIONS.get(RoleName(role_name), set()):
-            if perm_name in permission_models:
-                exists = await session.execute(
-                    select(RolePermission).where(
-                        RolePermission.role_id == role.id,
-                        RolePermission.permission_id == permission_models[perm_name].id,
-                    )
+            perm = permission_models.get(perm_name)
+            if perm is None:
+                continue
+            if (role.id, perm.id) in existing:
+                continue
+            existing.add((role.id, perm.id))
+            session.add(
+                RolePermission(
+                    role_id=role.id,
+                    permission_id=perm.id,
                 )
-                if exists.scalar_one_or_none() is None:
-                    session.add(
-                        RolePermission(
-                            role_id=role.id,
-                            permission_id=permission_models[perm_name].id,
-                        )
-                    )
+            )
     return role_models
 
 

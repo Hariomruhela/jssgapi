@@ -366,6 +366,82 @@ def test_dry_run_flags_unreadable_dates(client: TestClient, admin_token: str):
     assert len(data["warnings"]) >= 2
 
 
+def test_spouse_mobile_is_normalised_to_e164():
+    """A 10-digit sheet value must be stored as +91XXXXXXXXXX.
+
+    The sheet records the spouse mobile without a country code, which used to
+    land in family_members.contact_phone and profile_data as a bare 10-digit
+    string while the member's own phone was E.164.
+    """
+    headers = [h for _label, h in _table([]).columns]
+    row = _row(
+        "t",
+        "Asha Verma",
+        "14/03/1980",
+        "06/12/1985",
+        "02/11/2010",
+        "",
+        "Verma Spouse",
+        "9876543210",
+        "",
+        "1 Test Street",
+        "Indore",
+        "Vijay Nagar",
+        "+919999999999",
+        "asha@example.com",
+        "B.Tech",
+        "Engineer",
+        "Acme",
+        "Sec",
+        "JSSG",
+        "Health",
+        "",
+    )
+
+    with mock.patch("app.services.registration_sync_service.get_settings"):
+        service = RegistrationSyncService(None)
+        parsed = service._parse_row(2, row, headers)
+
+    assert parsed.values["spouse_mobile"] == "+919876543210"
+    assert parsed.phone == "+919999999999"
+
+
+def test_unparsable_spouse_mobile_is_kept_as_entered():
+    """A malformed spouse number must not fail the row; it is only a warning."""
+    headers = [h for _label, h in _table([]).columns]
+    row = _row(
+        "t",
+        "Asha Verma",
+        "14/03/1980",
+        "06/12/1985",
+        "02/11/2010",
+        "",
+        "Verma Spouse",
+        "not-a-number",
+        "",
+        "1 Test Street",
+        "Indore",
+        "Vijay Nagar",
+        "+919999999999",
+        "asha@example.com",
+        "B.Tech",
+        "Engineer",
+        "Acme",
+        "Sec",
+        "JSSG",
+        "Health",
+        "",
+    )
+
+    with mock.patch("app.services.registration_sync_service.get_settings"):
+        service = RegistrationSyncService(None)
+        parsed = service._parse_row(2, row, headers)
+
+    assert parsed.errors == []
+    assert parsed.values["spouse_mobile"] == "not-a-number"
+    assert "spouse_mobile" in {w.column for w in parsed.warnings}
+
+
 def test_endpoint_requires_authentication(client: TestClient):
     response = client.post(ENDPOINT, json={"dry_run": True})
     assert response.status_code == 401
