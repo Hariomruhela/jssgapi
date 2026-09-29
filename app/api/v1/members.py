@@ -13,14 +13,16 @@ from app.core.responses import created, ok, paginated
 from app.core.scope import assert_group_access, resolve_managed_group
 from app.dependencies import CurrentUser, DBSession, require_permission
 from app.models.member import Member
-from app.repositories.member_repository import MemberRepository
+from app.repositories.member_repository import MEMBER_PROFILE_LOADS, MemberRepository
 from app.schemas.member import (
     MemberApproveRequest,
     MemberCreate,
+    MemberListItemOut,
     MemberOut,
     MemberUpdate,
 )
 from app.services.audit_service import AuditService
+from app.services.profile_service import ProfileService
 
 router = APIRouter(prefix="/members", tags=["Members"])
 
@@ -28,6 +30,34 @@ CREATE = Depends(require_permission(Permission.MEMBER_CREATE))
 UPDATE = Depends(require_permission(Permission.MEMBER_UPDATE))
 DELETE = Depends(require_permission(Permission.MEMBER_DELETE))
 APPROVE = Depends(require_permission(Permission.MEMBER_APPROVE))
+
+
+def _member_list_item(member: Member, profiles: ProfileService) -> MemberListItemOut:
+    return MemberListItemOut(
+        **MemberOut.model_validate(member).model_dump(),
+        **profiles.build_profile(member).model_dump(),
+    )
+
+
+def _split_full_name(full_name: str) -> tuple[str, str]:
+    parts = full_name.split()
+    if not parts:
+        return full_name, ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[-1]
+
+
+async def _reload_member(db: DBSession, member_id: UUID) -> Member:
+    """Reload a member with the freshest columns and every relationship the
+    profile view needs (``group``/``location`` are loaded lazily by default)."""
+    result = await db.execute(
+        select(Member)
+        .options(*MEMBER_PROFILE_LOADS)
+        .where(Member.id == member_id)
+        .execution_options(populate_existing=True)
+    )
+    return result.scalar_one()
 
 
 @router.get("")
@@ -40,13 +70,14 @@ async def list_members(
     page_size: int = Query(20, ge=1, le=100),
 ):
     repo = MemberRepository(db)
+    profiles = ProfileService(db)
     if query:
         members = await repo.search(query)
         return ok(
             "Members fetched successfully",
-            [MemberOut.model_validate(m) for m in members],
+            [_member_list_item(m, profiles) for m in members],
         )
-    stmt = select(Member)
+    stmt = select(Member).options(*MEMBER_PROFILE_LOADS)
     stmt = repo.apply_filters(
         stmt,
         {
@@ -64,7 +95,7 @@ async def list_members(
     items = list(result.scalars().all())
     return paginated(
         "Members fetched successfully",
-        [MemberOut.model_validate(i) for i in items],
+        [_member_list_item(i, profiles) for i in items],
         {
             "page": page,
             "page_size": page_size,
@@ -79,14 +110,22 @@ async def create_member(body: MemberCreate, current_user: CurrentUser, db: DBSes
     repo = MemberRepository(db)
     if await repo.get_by_user_id(body.user_id):
         raise BadRequestException("A member profile already exists for this user")
-    data = body.model_dump()
+    data = body.member_columns()
+    first_name, last_name = _split_full_name(body.full_name)
+    data["first_name"] = data.get("first_name") or first_name
+    data["last_name"] = data.get("last_name") or last_name
     data["group_id"] = await resolve_managed_group(db, current_user, body.group_id)
     member = await repo.create(**data)
+    profiles = ProfileService(db)
+    await profiles.apply_values(member, body.profile_values())
     await AuditService(db).log(
         AuditAction.MEMBER_CREATE, entity_type="member", entity_id=member.id
     )
     await db.flush()
-    return created("Member created successfully", MemberOut.model_validate(member))
+    return created(
+        "Member created successfully",
+        _member_list_item(await _reload_member(db, member.id), profiles),
+    )
 
 
 @router.get("/{member_id}")

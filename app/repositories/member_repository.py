@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 from sqlalchemy import or_, select
+from sqlalchemy.orm import selectinload
 
 from app.models.member import Member
 from app.repositories.base_repository import BaseRepository
+
+# ``Member.group`` and ``Member.location`` use the default lazy strategy, which
+# cannot be resolved inside an async session. Any query whose caller needs the
+# profile fields (social_group_name, city, area) must eager load them.
+MEMBER_PROFILE_LOADS = (
+    selectinload(Member.group),
+    selectinload(Member.location),
+)
 
 
 class MemberRepository(BaseRepository[Member]):
@@ -37,6 +46,7 @@ class MemberRepository(BaseRepository[Member]):
         term = f"%{query}%"
         result = await self.session.execute(
             select(Member)
+            .options(*MEMBER_PROFILE_LOADS)
             .where(
                 Member.is_deleted.is_(False),
                 or_(

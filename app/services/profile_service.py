@@ -110,13 +110,7 @@ class ProfileService:
         if member is None:
             raise ProfileNotFoundException()
 
-        profile_data = dict(member.profile_data or {})
-        profile_data.update(values)
-        member.profile_data = profile_data
-        self._apply_member_fields(member, values)
-        await self._sync_family_fields(member, values)
-        await self._sync_professional_fields(member, values)
-        await self.session.flush()
+        await self.apply_values(member, values)
         await self.audit.log(
             AuditAction.MEMBER_UPDATE,
             user_id=user_id,
@@ -125,6 +119,22 @@ class ProfileService:
             details={"fields": sorted(values)},
         )
         return self._build_profile(member)
+
+    async def apply_values(self, member: Member, values: dict[str, str | None]) -> None:
+        """Persist profile ``values`` on ``member``.
+
+        Mirrors the values into ``members.profile_data`` and into the member
+        columns, family and professional records they belong to. Callers must
+        have ``member.group``/``member.location`` loaded only when they need the
+        built profile back.
+        """
+        profile_data = dict(member.profile_data or {})
+        profile_data.update(values)
+        member.profile_data = profile_data
+        self._apply_member_fields(member, values)
+        await self._sync_family_fields(member, values)
+        await self._sync_professional_fields(member, values)
+        await self.session.flush()
 
     async def upload_photo(
         self,
@@ -158,6 +168,14 @@ class ProfileService:
         member.profile_data = profile_data
         await self.session.flush()
         return media.url
+
+    def build_profile(self, member: Member) -> ProfileOut:
+        """Build the profile view for an already-loaded member.
+
+        ``member.group`` and ``member.location`` must be eager loaded; they use
+        the default lazy strategy and cannot be loaded inside the async session.
+        """
+        return self._build_profile(member)
 
     def _build_profile(self, member: Member) -> ProfileOut:
         values = self._fallback_values(member)

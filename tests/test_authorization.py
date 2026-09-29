@@ -491,6 +491,8 @@ def test_group_admin_scoped_to_own_group(client, world):
             "user_id": str(world["free_user_id"]),
             "first_name": "Free",
             "last_name": "User",
+            "full_name": "Free User",
+            "phone_number": "9000000009",
             "group_id": str(world["group_b_id"]),
         },
         headers=headers,
