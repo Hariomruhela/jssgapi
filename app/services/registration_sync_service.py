@@ -40,6 +40,33 @@ EMAIL_MAX = 255
 TEXT_MAX = 255
 ADDRESS_MAX = 2000
 
+# The trial form is filled in by hand, so blank-looking cells often contain a
+# placeholder. These are dropped (with a warning) instead of becoming a
+# family_members row called "Nil" or a profile value of "NA".
+PLACEHOLDER_VALUES = frozenset(
+    {
+        "-",
+        "--",
+        "---",
+        ".",
+        "n a",
+        "n/a",
+        "na",
+        "nil",
+        "nill",
+        "none",
+        "not applicable",
+        "not available",
+        "same",
+        "same as above",
+        "same as above.",
+        "same as mentioned above",
+        "not mentioned",
+        "x",
+        "xx",
+    }
+)
+
 # Sheet column (normalised) -> registration field. Several aliases per field so
 # small header rewordings do not break the import.
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
@@ -290,6 +317,12 @@ def phone_key(value: str | None) -> str:
     return digits
 
 
+def is_placeholder(value: str) -> bool:
+    """True for the "NA" / "Nil" / "Same as above" filler used in the form."""
+    normalized = re.sub(r"\s+", " ", value.strip().lower())
+    return normalized in PLACEHOLDER_VALUES
+
+
 def truncate(value: str | None, limit: int) -> str | None:
     if value is None:
         return None
@@ -427,6 +460,7 @@ class RegistrationSyncService:
         columns: list[str],
     ) -> ParsedRow:
         values: dict[str, str] = {}
+        row_warnings: list[tuple[str, str]] = []
         for position, cell in enumerate(cells):
             if position >= len(columns):
                 break
@@ -435,10 +469,26 @@ class RegistrationSyncService:
                 continue
             # A form can repeat a header (the trial sheet has two identical
             # "Profile Photo Spouse" columns); keep the first non-empty cell.
-            if field_key not in values:
-                values[field_key] = cell.strip()
+            if field_key in values:
+                continue
+            text = cell.strip()
+            if is_placeholder(text):
+                # Dropped outright: "NA"/"Nil" would otherwise become a
+                # family_members row with that name, and the field is left
+                # null so the API can tell "not filled in" from a real value.
+                row_warnings.append((field_key, text))
+                continue
+            values[field_key] = text
 
         row = ParsedRow(row_number=row_number, values=values)
+        for field_key, text in row_warnings:
+            row.warnings.append(
+                RowIssue(
+                    row=row_number,
+                    column=field_key,
+                    message=f"placeholder {text!r} ignored",
+                )
+            )
 
         name = values.get("full_name", "").strip()
         if not name:
@@ -825,6 +875,10 @@ class RegistrationSyncService:
                 logger.exception(
                     "registration sync failed on sheet row %s", row.row_number
                 )
+                # begin_nested() rolls the row back, but the objects stay in the
+                # session's identity map; drop them so a later commit cannot
+                # re-insert a member whose profile was never written.
+                self.session.expunge_all()
                 failed += 1
                 issue = RowIssue(
                     row=row.row_number,
@@ -944,9 +998,12 @@ class RegistrationSyncService:
             created_by=current_user_id,
             updated_by=current_user_id,
         )
-        # Assigned so ProfileService never has to lazy-load the relationship
-        # inside the async session.
+        # Assigned explicitly so ProfileService never lazy-loads either
+        # relationship inside the async session: a lazy load there raises
+        # MissingGreenlet and would leave a half-imported member behind.
         member.user = user
+        member.family_members = []
+        member.professional_info = []
         self.session.add(member)
         await self.session.flush()
 
@@ -957,3 +1014,4 @@ class RegistrationSyncService:
             row.row_number,
         )
         return member
+

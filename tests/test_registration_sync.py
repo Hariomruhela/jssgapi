@@ -13,9 +13,12 @@ from app.config import get_settings
 from app.core.security import create_access_token, hash_password
 from app.main import app
 from app.models.audit_log import AuditLog
+from app.models.family import FamilyMember
 from app.models.member import Member
+from app.models.professional import ProfessionalInformation
 from app.models.user import Role, User
 from app.services.google_sheets_service import SheetTable
+from app.services.profile_service import PROFILE_FIELDS
 from app.services.registration_sync_service import (
     RegistrationSyncService,
     build_column_index,
@@ -372,10 +375,219 @@ def test_write_mode_blocked_by_kill_switch(client: TestClient, admin_token: str)
     table = _table(
         [_row("t", "Blocked", "", "", "", "", "", "", "", "", "", "", "9876500002")]
     )
-    response = _call(client, admin_token, table, dry_run=False)
+    with mock.patch("app.services.registration_sync_service.get_settings") as get_cfg:
+        get_cfg.return_value.google_sheets_sync_enabled = False
+        response = _call(client, admin_token, table, dry_run=False)
     assert response.status_code == 400, response.text
     assert "disabled" in response.json()["message"].lower()
 
 
 def test_service_is_constructible():
     assert RegistrationSyncService is not None
+
+
+def test_placeholders_are_dropped_not_stored():
+    from app.services.registration_sync_service import is_placeholder
+
+    for value in ("NA", "na", "Nil", "nil", "N/A", "-", "Same as above", "None"):
+        assert is_placeholder(value) is True, value
+    for value in ("Naveen", "N/A College", "Nancy", "xyz"):
+        assert is_placeholder(value) is False, value
+
+
+def test_dry_run_reports_placeholder_warnings(client: TestClient, admin_token: str):
+    table = _table(
+        [
+            _row(
+                "t",
+                "Placeholder Row",
+                "1/1/1990",
+                "",
+                "",
+                "",
+                "NA",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "9876500009",
+                "",
+                "",
+                "NA",
+                "",
+                "",
+                "",
+                "",
+                "",
+            )
+        ]
+    )
+    response = _call(client, admin_token, table)
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["inserted"] == 1
+    dropped = {w["column"] for w in data["warnings"]}
+    assert "spouse_name" in dropped
+    assert "member_occupation" in dropped
+
+
+def test_missing_fields_stay_null_and_placeholders_are_dropped():
+    """A field the sheet left blank must stay null, never a literal "NA".
+
+    Storing "NA" would be indistinguishable from a real value and would create
+    a family_members row literally named "NA", so the importer leaves the key
+    absent and the API reports null.
+    """
+    headers = [h for _label, h in _table([]).columns]
+    row = _row(
+        "t",
+        "Asha Verma",
+        "14/03/1980",
+        "",
+        "",
+        "",
+        "NA",
+        "9876543210",
+        "",
+        "1 Test Street",
+        "Indore",
+        "Vijay Nagar",
+        "+919999999999",
+        "asha@example.com",
+        "B.Tech",
+        ".",
+        "",
+        "JSSG",
+        "Health",
+        "",
+    )
+
+    with mock.patch("app.services.registration_sync_service.get_settings"):
+        service = RegistrationSyncService(None)
+        parsed = service._parse_row(2, row, headers)
+
+    values = parsed.values
+    # Blank cells are not keys at all.
+    assert "anniversary_date" not in values
+    assert "son_name" not in values
+    # Placeholder cells are dropped, not stored as "NA"/"Nil".
+    assert "spouse_name" not in values
+    assert "member_occupation" not in values
+    # Real values survive untouched.
+    assert values["full_name"] == "Asha Verma"
+    assert values["city"] == "Indore"
+    dropped = {w.column for w in parsed.warnings}
+    assert {"spouse_name", "member_occupation"} <= dropped
+
+
+def test_write_mode_actually_fills_profile_data(client: TestClient, admin_token: str):
+    """Regression: a write must persist profile_data, not just user+member.
+
+    A lazy-loaded relationship inside the async session used to raise
+    MissingGreenlet, which rolled the row back yet still left the user and
+    member behind with an empty profile.
+    """
+    phone = _fresh_phone()
+    table = _table(
+        [
+            _row(
+                "t",
+                "Regression Member",
+                # Unambiguous dd/mm so the day-first default is provable.
+                "14/03/1980",
+                "06/12/1985",
+                "02/11/2010",
+                "https://drive.google.com/open?id=abc",
+                "Regression Spouse",
+                "9998887776",
+                "1",
+                "1 Test Street",
+                "Indore",
+                "Vijay Nagar",
+                phone,
+                "regression@example.com",
+                "B.Tech",
+                "Engineer",
+                "Acme",
+                "Secretary",
+                "JSSG",
+                "Health",
+                "https://drive.google.com/open?id=xyz",
+            )
+        ]
+    )
+    engine = create_engine(_psycopg_url(), poolclass=NullPool)
+    with Session(engine) as session:
+        session.execute(
+            User.__table__.update()
+            .where(User.full_name == "Regression Member")
+            .values(is_phone_verified=False)
+        )
+        session.commit()
+    try:
+        with mock.patch(
+            "app.services.registration_sync_service.get_settings"
+        ) as get_cfg:
+            get_cfg.return_value.google_sheets_sync_enabled = True
+            response = _call(client, admin_token, table, dry_run=False)
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["inserted"] == 1, data["errors"]
+        assert data["failed"] == 0, data["errors"]
+
+        with Session(engine) as session:
+            member = session.execute(
+                select(Member).where(Member.contact_phone == phone)
+            ).scalar_one()
+            user_id = member.user_id
+            _created_user_ids.append(user_id)
+            profile = member.profile_data
+            assert profile["full_name"] == "Regression Member"
+            assert profile["city"] == "Indore"
+            assert profile["spouse_name"] == "Regression Spouse"
+            assert profile["member_dob"] == "1980-03-14"
+            # Daughter was never filled in on the sheet, so no key is written
+            # and the API reports null rather than a literal "NA".
+            assert "daughter_name" not in profile
+            assert "NA" not in profile.values()
+            # Every key that IS written must be a real profile field.
+            assert set(profile) <= set(PROFILE_FIELDS)
+            family = (
+                session.execute(
+                    select(FamilyMember).where(FamilyMember.member_id == member.id)
+                )
+                .scalars()
+                .all()
+            )
+            assert [f.relationship_type for f in family] == ["spouse"]
+            assert not any(f.name.upper() in {"NA", "NIL"} for f in family)
+            professional = (
+                session.execute(
+                    select(ProfessionalInformation).where(
+                        ProfessionalInformation.member_id == member.id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(professional) == 1
+            assert professional[0].company_name == "Acme"
+    finally:
+        with Session(engine) as session:
+            member = session.execute(
+                select(Member).where(Member.contact_phone == phone)
+            ).scalar_one_or_none()
+            if member is not None:
+                # family_members.member_id is NOT NULL, so children go first.
+                session.execute(
+                    delete(FamilyMember).where(FamilyMember.member_id == member.id)
+                )
+                session.execute(
+                    delete(ProfessionalInformation).where(
+                        ProfessionalInformation.member_id == member.id
+                    )
+                )
+                session.delete(member)
+                session.execute(delete(User).where(User.id == member.user_id))
+            session.commit()

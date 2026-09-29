@@ -10,6 +10,11 @@ from app.core.exceptions import BadRequestException, UnauthorizedException
 
 @pytest.fixture(autouse=True)
 def _ensure_widget_configured(monkeypatch):
+    # The widget path is the code under test, so direct mode is forced off.
+    # Without this the developer's local .env (which may set MSG91_AUTH_KEY /
+    # MSG91_OTP_TEMPLATE_ID) silently switches every assertion to the direct API.
+    monkeypatch.setattr(msg91.settings, "msg91_auth_key", "")
+    monkeypatch.setattr(msg91.settings, "msg91_otp_template_id", "")
     monkeypatch.setattr(msg91.settings, "msg91_widget_id", "generated-widget-id")
     monkeypatch.setattr(msg91.settings, "msg91_widget_token", "generated-token")
 

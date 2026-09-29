@@ -21,6 +21,20 @@ def client():
 
 
 @pytest.fixture(autouse=True)
+def _dev_sms(monkeypatch):
+    """Force the dev SMS provider so these tests never hit a real gateway.
+
+    They assert on ``dev_otp``, which is only returned when no provider is
+    configured. A local ``.env`` with ``SMS_PROVIDER=twilio`` would otherwise
+    raise (no credentials) and make the tests environment-dependent.
+    """
+    import app.integrations.sms as sms
+
+    monkeypatch.setattr(sms.settings, "sms_provider", "")
+    monkeypatch.setattr(sms, "_provider", None, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _mock_firebase(monkeypatch):
     from app.core.exceptions import UnauthorizedException
 

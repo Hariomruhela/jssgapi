@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import create_engine, text
@@ -44,6 +46,14 @@ RESTORE_DDL = {
 }
 COLUMNS = tuple(RESTORE_DDL)
 
+# Postgres types for the jsonb_to_recordset signature used to write the
+# snapshot back; they must match the DDL above.
+_SNAPSHOT_TYPES = {
+    "blood_group": "VARCHAR(10)",
+    "profile_data": "JSONB",
+    "is_profile_complete": "BOOLEAN",
+}
+
 
 def _sync_url() -> str:
     return get_settings().database_url.replace(
@@ -80,15 +90,52 @@ def _column_exists(column: str) -> bool:
     )
 
 
+def _rows_as_dicts(sql: str) -> list[dict]:
+    engine = create_engine(_sync_url(), poolclass=NullPool)
+    try:
+        with engine.connect() as connection:
+            return [dict(row) for row in connection.execute(text(sql)).mappings()]
+    finally:
+        engine.dispose()
+
+
+def _restore_rows(rows: list[dict]) -> None:
+    if not rows:
+        return
+    assignments = ", ".join(f'"{c}" = r."{c}"' for c in rows[0] if c != "id")
+    engine = create_engine(_sync_url(), poolclass=NullPool)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"UPDATE members AS m SET {assignments} FROM jsonb_to_recordset("
+                    "CAST(:rows AS jsonb)) AS r(id uuid, "
+                    f"{', '.join(f'\"{c}\" {t}' for c, t in _SNAPSHOT_TYPES.items())}) "
+                    "WHERE m.id = r.id"
+                ),
+                {"rows": json.dumps(rows, default=str)},
+            )
+    finally:
+        engine.dispose()
+
+
 @pytest.fixture
 def drifted_columns():
     """Drop real members columns, restoring them with raw DDL on teardown.
 
     Restoration deliberately avoids the code under test so a failure inside the
     guard cannot leave the database broken for later tests.
+
+    Dropping a column discards the data in it, so the rows are snapshotted to
+    JSON first and written back afterwards. Without that, running the suite
+    against a live database silently resets every member's profile_data to
+    '{}' and is_profile_complete to false.
     """
     dropped = [c for c in COLUMNS if _column_exists(c)]
     assert len(dropped) == len(COLUMNS), f"missing setup columns: {dropped}"
+    snapshot = _rows_as_dicts(
+        f"SELECT id, {', '.join(f'\"{c}\"' for c in dropped)} FROM members"
+    )
     for column in dropped:
         _exec(f'ALTER TABLE members DROP COLUMN "{column}"')
     try:
@@ -98,6 +145,7 @@ def drifted_columns():
             _exec(RESTORE_DDL[column])
         still_missing = [c for c in dropped if not _column_exists(c)]
         assert not still_missing, f"cleanup failed: {still_missing}"
+        _restore_rows(snapshot)
 
 
 async def test_healthy_schema_reports_no_missing_columns():
