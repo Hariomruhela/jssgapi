@@ -15,6 +15,18 @@ env/
 *.key
 firebase-service-account.json
 
+# Google service-account key files (never commit these)
+*service-account*.json
+*service_account*.json
+google-credentials*.json
+gcp-*.json
+credentials.json
+gcloud-key*.json
+# GCP console key downloads are named "<project-id>-<12 hex chars>.json"
+*-????????????.json
+# Belt-and-braces: the key currently sitting in the repo root
+jssgdata-*.json
+
 # Test & tooling
 .pytest_cache/
 .coverage

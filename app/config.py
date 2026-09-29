@@ -138,6 +138,20 @@ class Settings(BaseSettings):
     def _pin_firebase_project_id(cls, value: object) -> str:
         return FIREBASE_PROJECT_ID
 
+    # Google Sheets (registration import).
+    # Credentials are never stored in the repository: either inline the service
+    # account key in GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON (single line, ``\n``
+    # escaped newlines are accepted) or point GOOGLE_APPLICATION_CREDENTIALS
+    # at the key file that lives outside the repo.
+    google_application_credentials: str = ""
+    google_sheets_spreadsheet_id: str = ""
+    google_sheets_sheet_name: str = ""
+    google_sheets_range: str = ""
+    google_sheets_header_row: int = 1
+    google_sheets_data_start_row: int = 2
+    google_sheets_service_account_json: str = ""
+    google_sheets_sync_enabled: bool = False
+
     # Payment
     payment_provider: str = ""
     payment_key: str = ""
