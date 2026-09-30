@@ -119,6 +119,11 @@ class MediaService:
             user_agent=user_agent,
         )
         await self.session.flush()
+        # created_at/updated_at are server defaults, so they are expired after
+        # the flush and reading them would trigger an implicit lazy load - which
+        # cannot be awaited in async and raises MissingGreenlet. The flush above
+        # has already persisted the url we set, so refreshing is safe.
+        await self.session.refresh(media)
         return media
 
     def read(self, media: Media) -> bytes:

@@ -154,6 +154,9 @@ async def update_member(
         AuditAction.MEMBER_UPDATE, entity_type="member", entity_id=member.id
     )
     await db.flush()
+    # `updated_at` is a server-side onupdate column, so it is expired after the flush and
+    # reading it would trigger lazy IO outside the async context - reload before serializing.
+    member = await _reload_member(db, member.id)
     return ok("Member updated successfully", MemberOut.model_validate(member))
 
 

@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     cloudflare_r2_bucket: str = ""
     cloudflare_r2_public_url: str = ""
 
+    # Which backend stores uploaded media: "auto" (R2 when configured,
+    # otherwise Postgres), "r2", "database", or "local". Postgres is the
+    # default fallback because it is the only backend that survives on
+    # serverless hosts, where local disk is per-instance and ephemeral.
+    media_storage_backend: Literal["auto", "r2", "database", "local"] = "auto"
+
     # Absolute base used to build media URLs when the request base is not
     # available (e.g. background jobs). Leave empty to derive it per request.
     public_base_url: str = ""

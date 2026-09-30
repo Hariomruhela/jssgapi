@@ -8,7 +8,7 @@ from app.models.family import FamilyMember  # noqa: F401
 from app.models.fee import Fee  # noqa: F401
 from app.models.group import SocialGroup  # noqa: F401
 from app.models.location import Location  # noqa: F401
-from app.models.media import Media  # noqa: F401
+from app.models.media import Media, MediaObject  # noqa: F401
 from app.models.member import Member  # noqa: F401
 from app.models.news import News  # noqa: F401
 from app.models.notification import DeviceToken, Notification  # noqa: F401

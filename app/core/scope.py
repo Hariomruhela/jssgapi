@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.constants import RoleName
+from app.core.constants import RoleName, resolve_role_name
 from app.core.exceptions import ForbiddenException
 from app.models.member import Member
 
@@ -14,14 +14,14 @@ if TYPE_CHECKING:
     from app.models.user import User
 
 UNRESTRICTED_ROLES = {
-    RoleName.SUPER_ADMIN.value,
-    RoleName.FEDERATION_ADMIN.value,
-    RoleName.ADMIN.value,
+    RoleName.SUPER_ADMIN,
+    RoleName.FEDERATION_ADMIN,
+    RoleName.ADMIN,
 }
 
 SCOPED_ROLES = {
-    RoleName.REGIONAL_ADMIN.value,
-    RoleName.GROUP_ADMIN.value,
+    RoleName.REGIONAL_ADMIN,
+    RoleName.GROUP_ADMIN,
 }
 
 
@@ -29,7 +29,7 @@ async def get_admin_scope(db: AsyncSession, user: User) -> UUID | None:
     """Return the group an admin is limited to, or None for unrestricted roles."""
     if not user.role:
         raise ForbiddenException("No role assigned")
-    role = user.role.name
+    role = resolve_role_name(user.role.name)
     if role in UNRESTRICTED_ROLES:
         return None
     if role not in SCOPED_ROLES:
@@ -44,11 +44,13 @@ async def get_admin_scope(db: AsyncSession, user: User) -> UUID | None:
 async def assert_group_access(
     db: AsyncSession, user: User, target_group_id: UUID | None
 ) -> None:
-    if target_group_id is None:
-        raise ForbiddenException("This record is not associated with a group")
+    # Unrestricted roles (SUPER_ADMIN/FEDERATION_ADMIN/ADMIN) are not group scoped, so a record
+    # without a group must not block them - resolve the scope before validating the target.
     scope = await get_admin_scope(db, user)
     if scope is None:
         return
+    if target_group_id is None:
+        raise ForbiddenException("This record is not associated with a group")
     if target_group_id != scope:
         raise ForbiddenException("Operation is limited to your own group")
 

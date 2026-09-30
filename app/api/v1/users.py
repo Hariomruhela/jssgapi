@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 
+from app.core.constants import resolve_role_name
 from app.core.exceptions import (
     AlreadyExistsException,
     BadRequestException,
@@ -29,10 +30,15 @@ ROLE = Depends(require_permission(Permission.ROLE_MANAGE))
 async def _resolve_role(db, role_name: str | None) -> UUID | None:
     if role_name is None:
         return None
-    result = await db.execute(select(Role).where(Role.name == role_name))
+    # Accept "Admin"/"admin"/"Admin\n" as the single canonical ADMIN role so a
+    # whitespace-polluted label can never be selected or created.
+    canonical = resolve_role_name(role_name)
+    if canonical is None:
+        raise BadRequestException(f"Role '{role_name}' does not exist")
+    result = await db.execute(select(Role).where(Role.name == canonical.value))
     role = result.scalar_one_or_none()
     if role is None:
-        raise BadRequestException(f"Role '{role_name}' does not exist")
+        raise BadRequestException(f"Role '{canonical.value}' is not configured yet")
     return role.id
 
 

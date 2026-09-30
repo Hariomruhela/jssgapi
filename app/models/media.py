@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, ForeignKey, String, Text
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    LargeBinary,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -37,3 +46,32 @@ class Media(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
 
     def __repr__(self) -> str:
         return f"<Media {self.file_name}>"
+
+
+class MediaObject(Base):
+    """The bytes of an uploaded object, kept in Postgres.
+
+    Used by :class:`~app.services.media_storage.DatabaseStorage` so uploads
+    survive on serverless hosts, where the local filesystem is per-instance and
+    is wiped on a cold start. Keyed by the same object key the storage backends
+    use, so switching backends later does not touch the ``media`` rows.
+    """
+
+    __tablename__ = "media_objects"
+
+    object_key: Mapped[str] = mapped_column(String(500), primary_key=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    def __repr__(self) -> str:
+        return f"<MediaObject {self.object_key} ({self.file_size}B)>"

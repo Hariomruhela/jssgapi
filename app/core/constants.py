@@ -12,6 +12,24 @@ class RoleName(str, Enum):
     MEMBER = "MEMBER"
 
 
+# Canonical lookup: the six RoleName values are the ONLY roles the system recognises.
+# The `roles` table is populated from external sources (Excel / Google Sheet imports),
+# which have historically stored whitespace-polluted labels such as "Admin\n". Those rows
+# matched no ROLE_PERMISSIONS key, so legitimate admins silently lost every permission.
+# Resolving the stored label back to the canonical enum keeps exactly one role identity
+# per name instead of loosening authorization: "admin" can only ever resolve to ADMIN.
+_CANONICAL_ROLES: dict[str, RoleName] = {
+    role.value.casefold(): role for role in RoleName
+}
+
+
+def resolve_role_name(raw: str | None) -> RoleName | None:
+    """Map a stored/incoming role label onto its canonical RoleName, or None if unknown."""
+    if raw is None:
+        return None
+    return _CANONICAL_ROLES.get(str(raw).strip().casefold())
+
+
 class MemberStatus(str, Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"

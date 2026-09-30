@@ -28,10 +28,14 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     async def get_or_create(
         cls, session: AsyncSession, name: RoleName, description: str | None = None
     ) -> Role:
-        result = await session.execute(select(cls).where(cls.name == name.value))
+        # Always store the canonical enum value: an imported/polluted label such as
+        # "Admin\n" would otherwise create a second role row that matches no
+        # ROLE_PERMISSIONS key and silently denies access.
+        canonical = name.value if isinstance(name, RoleName) else str(name).strip().upper()
+        result = await session.execute(select(cls).where(cls.name == canonical))
         role = result.scalar_one_or_none()
         if role is None:
-            role = cls(name=name.value, description=description or name.value)
+            role = cls(name=canonical, description=description or canonical)
             session.add(role)
             await session.flush()
         return role

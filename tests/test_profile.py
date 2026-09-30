@@ -9,7 +9,7 @@ from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
 from app.main import app
-from app.models.media import Media
+from app.models.media import Media, MediaObject
 from app.models.member import Member
 from app.models.user import User
 
@@ -64,6 +64,14 @@ def _cleanup(phones: list[str]) -> None:
     try:
         with engine.connect() as connection:
             user_ids = select(User.id).where(User.phone_number.in_(phones))
+            # Media blobs live outside the media row on the Postgres backend,
+            # so they have to be purged explicitly.
+            object_keys = select(Media.r2_object_key).where(
+                Media.uploaded_by.in_(user_ids)
+            )
+            connection.execute(
+                delete(MediaObject).where(MediaObject.object_key.in_(object_keys))
+            )
             connection.execute(delete(Media).where(Media.uploaded_by.in_(user_ids)))
             connection.execute(delete(User).where(User.phone_number.in_(phones)))
             connection.commit()

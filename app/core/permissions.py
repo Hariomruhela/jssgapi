@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.core.constants import RoleName
+from app.core.constants import RoleName, resolve_role_name
 from app.core.exceptions import ForbiddenException
 
 if TYPE_CHECKING:
@@ -21,7 +21,7 @@ ROLE_HIERARCHY: dict[RoleName, int] = {
 def get_user_role_level(user: User) -> int:
     if not user.role:
         return 0
-    return ROLE_HIERARCHY.get(user.role.name, 0)
+    return ROLE_HIERARCHY.get(resolve_role_name(user.role.name) or RoleName.MEMBER, 0)
 
 
 def check_role_level(user: User, minimum_role: RoleName) -> None:
@@ -35,7 +35,7 @@ def require_role(*allowed_roles: RoleName):
     def _check(user: User) -> None:
         if not user.role:
             raise ForbiddenException("No role assigned")
-        if user.role.name not in allowed_roles:
+        if resolve_role_name(user.role.name) not in allowed_roles:
             role_names = " or ".join(r.value for r in allowed_roles)
             raise ForbiddenException(f"Requires one of: {role_names}")
 
@@ -246,7 +246,10 @@ ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
 def check_permission(user: User, permission: str) -> bool:
     if not user.role:
         return False
-    return permission in ROLE_PERMISSIONS.get(user.role.name, set())
+    role = resolve_role_name(user.role.name)
+    if role is None:
+        return False
+    return permission in ROLE_PERMISSIONS.get(role, set())
 
 
 def require_permission(user: User, permission: str) -> None:

@@ -13,6 +13,7 @@ from sqlalchemy.pool import NullPool
 from app.config import get_settings
 from app.core.security import hash_password
 from app.main import app
+from app.core.constants import RoleName
 from app.models.group import SocialGroup
 from app.models.member import Member
 from app.models.user import Role, User
@@ -527,3 +528,117 @@ def test_regional_admin_scoped_to_own_group(client, world):
         headers=headers,
     )
     assert resp.status_code == 403, resp.text
+
+
+# --- Regression: role names polluted by the Excel / Google Sheet import -------------
+# Production stored the ADMIN role as "Admin\n". Authorization looks roles up by
+# exact name, so those users matched no ROLE_PERMISSIONS key and every member write
+# returned 403 "Missing permission: member.update". See migration c7d2e1f0a3b4.
+
+
+def _create_polluted_role_user(engine, stored_role_name: str, phone: str) -> User:
+    """Create a user whose roles row carries a whitespace/case polluted name."""
+    with Session(engine) as session:
+        role = Role(name=stored_role_name, description="Registered community member")
+        session.add(role)
+        session.flush()
+        user = User(
+            phone_number=phone,
+            password_hash=hash_password(PASSWORD),
+            full_name="Polluted Role Admin",
+            is_email_verified=True,
+            is_phone_verified=True,
+            role_id=role.id,
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        return user
+
+
+@pytest.mark.parametrize("stored", ["Admin\n", "Admin", "admin", " admin "])
+def test_polluted_admin_role_name_still_authorizes_member_writes(client, world, stored):
+    engine = world["engine"]
+    phone = _next_phone()
+    admin = _create_polluted_role_user(engine, stored, phone)
+    group = _create_group(engine, f"Polluted Group {uuid.uuid4()}")
+    target = _create_user(engine, "MEMBER", _next_phone())
+    member = _create_member(engine, target.id, None)  # group-less, as in production
+    headers = _auth(_login(client, phone))
+
+    try:
+        resp = client.post(
+            "/api/v1/members",
+            json={
+                "user_id": str(world["free_user_id"]),
+                "full_name": "Created By Polluted Admin",
+                "phone_number": "+919876500000",
+            },
+            headers=headers,
+        )
+        assert resp.status_code in (200, 201), resp.text
+
+        resp = client.patch(
+            f"/api/v1/members/{member.id}",
+            json={"occupation_summary": "edited by polluted admin"},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["occupation_summary"] == "edited by polluted admin"
+
+        resp = client.delete(f"/api/v1/members/{member.id}", headers=headers)
+        assert resp.status_code == 200, resp.text
+    finally:
+        with Session(engine) as session:
+            session.execute(delete(Member).where(Member.user_id == admin.id))
+            session.execute(delete(Member).where(Member.id == member.id))
+            session.execute(delete(Member).where(Member.user_id == world["free_user_id"]))
+            session.execute(delete(User).where(User.id.in_([admin.id, target.id])))
+            session.execute(
+                delete(Role).where(Role.name == stored)
+            )
+            session.execute(
+                delete(SocialGroup).where(SocialGroup.id == group.id)
+            )
+            session.commit()
+
+
+def test_polluted_member_role_name_gets_no_write_permissions(client, world):
+    """The fix must not escalate anyone: a polluted MEMBER row still cannot write."""
+    engine = world["engine"]
+    phone = _next_phone()
+    fake_member = _create_polluted_role_user(engine, "Member\n", phone)
+    target = _create_user(engine, "MEMBER", _next_phone())
+    member = _create_member(engine, target.id, None)
+    headers = _auth(_login(client, phone))
+
+    try:
+        for method, path, kwargs in (
+            ("post", "/api/v1/members", {"json": {"user_id": str(world["free_user_id"]),
+                                                   "full_name": "Nope",
+                                                   "phone_number": "+919876500001"}}),
+            ("patch", f"/api/v1/members/{member.id}", {"json": {"occupation_summary": "x"}}),
+            ("delete", f"/api/v1/members/{member.id}", {}),
+        ):
+            resp = getattr(client, method)(path, headers=headers, **kwargs)
+            assert resp.status_code == 403, f"{method} {path} -> {resp.text}"
+    finally:
+        with Session(engine) as session:
+            session.execute(delete(Member).where(Member.user_id == fake_member.id))
+            session.execute(delete(Member).where(Member.id == member.id))
+            session.execute(delete(User).where(User.id.in_([fake_member.id, target.id])))
+            session.execute(delete(Role).where(Role.name == "Member\n"))
+            session.commit()
+
+
+def test_role_name_resolver_maps_only_canonical_roles():
+    from app.core.constants import resolve_role_name
+
+    assert resolve_role_name("Admin") is RoleName.ADMIN
+    assert resolve_role_name("Admin\n") is RoleName.ADMIN
+    assert resolve_role_name(" admin ") is RoleName.ADMIN
+    assert resolve_role_name("ADMIN") is RoleName.ADMIN
+    assert resolve_role_name("Member\n") is RoleName.MEMBER
+    assert resolve_role_name("BOGUS") is None
+    assert resolve_role_name("") is None
+    assert resolve_role_name(None) is None
