@@ -24,7 +24,7 @@ class MemberCreate(ProfileUpdate):
 
     model_config = ConfigDict(extra="ignore")
 
-    user_id: UUID
+    user_id: UUID | None = None
     group_id: UUID | None = None
     location_id: UUID | None = None
     first_name: str | None = None
@@ -84,7 +84,7 @@ class MemberOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    user_id: UUID
+    user_id: UUID | None = None
     group_id: UUID | None = None
     location_id: UUID | None = None
     first_name: str

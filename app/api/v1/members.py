@@ -108,7 +108,9 @@ async def list_members(
 @router.post("", dependencies=[CREATE])
 async def create_member(body: MemberCreate, current_user: CurrentUser, db: DBSession):
     repo = MemberRepository(db)
-    if await repo.get_by_user_id(body.user_id):
+    # Only enforced when the admin links an account; imported community members
+    # legitimately have no User at all.
+    if body.user_id is not None and await repo.get_by_user_id(body.user_id):
         raise BadRequestException("A member profile already exists for this user")
     data = body.member_columns()
     first_name, last_name = _split_full_name(body.full_name)

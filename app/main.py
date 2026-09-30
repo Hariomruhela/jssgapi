@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -12,12 +13,17 @@ from app.core.exceptions import AppException
 from app.core.responses import error_response
 from app.database import async_session_factory
 from app.services.bootstrap_service import bootstrap_app
+from app.services.media_storage import validate_storage_configuration
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Reported before anything else so a bad Cloudflare R2 setting is visible at
+    # boot instead of only as a signature error on the first media read.
+    logger.info("media storage backend: %s", validate_storage_configuration())
     await bootstrap_app(async_session_factory)
     yield
 

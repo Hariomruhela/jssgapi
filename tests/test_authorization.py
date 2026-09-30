@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, delete, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -642,3 +642,156 @@ def test_role_name_resolver_maps_only_canonical_roles():
     assert resolve_role_name("BOGUS") is None
     assert resolve_role_name("") is None
     assert resolve_role_name(None) is None
+
+
+# --- Regression: a Member is a community profile, a User is a login account -------
+# members.user_id was NOT NULL ON DELETE CASCADE, which forced every community
+# member to have a login and made a login deletion able to destroy community data.
+# See migrations d4e5f6a7b8c9 (user_id optional) and the panel guard that produced
+# "The API requires an existing user for every member record."
+
+
+def _create_userless_member(client: TestClient, headers, name: str, phone: str) -> dict:
+    """Admin creates a member with no User account (e.g. a Google Sheet import)."""
+    resp = client.post(
+        "/api/v1/members",
+        json={
+            "full_name": name,
+            "phone_number": phone,
+            "member_dob": "1985-04-02",
+            "spouse_name": "Sunita",
+            "address": "Sector A",
+        },
+        headers=headers,
+    )
+    assert resp.status_code in (200, 201), resp.text
+    return resp.json()["data"]
+
+
+def test_admin_creates_member_without_user_account(client, world):
+    headers = _auth(world["tokens"]["ADMIN"])
+    name = f"No Account {uuid.uuid4()}"
+    member = _create_userless_member(client, headers, name, "9876500999")
+
+    assert member["user_id"] is None
+    assert member["user"] is None
+    assert member["full_name"] == name
+    assert member["member_dob"] == "1985-04-02"
+    assert member["spouse_name"] == "Sunita"
+
+    with Session(world["engine"]) as session:
+        session.execute(
+            delete(Member).where(Member.id == member["id"])
+        )
+        session.commit()
+
+
+def test_admin_updates_and_deletes_member_without_user_account(client, world):
+    headers = _auth(world["tokens"]["ADMIN"])
+    member = _create_userless_member(
+        client, headers, f"No Account {uuid.uuid4()}", "9876500998"
+    )
+    member_id = member["id"]
+
+    resp = client.patch(
+        f"/api/v1/members/{member_id}",
+        json={"first_name": "Edited", "last_name": "Without", "occupation_summary": "Business"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["user_id"] is None
+    assert resp.json()["data"]["occupation_summary"] == "Business"
+
+    resp = client.get(f"/api/v1/members/{member_id}", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["user_id"] is None
+
+    resp = client.delete(f"/api/v1/members/{member_id}", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+
+def test_admin_still_updates_member_that_has_a_linked_user(client, world):
+    headers = _auth(world["tokens"]["ADMIN"])
+    target = _create_user(world["engine"], "MEMBER", _next_phone())
+    member = _create_member(world["engine"], target.id, None)
+
+    resp = client.patch(
+        f"/api/v1/members/{member.id}",
+        json={"occupation_summary": "linked edit"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["user_id"] == str(target.id)
+    assert resp.json()["data"]["occupation_summary"] == "linked edit"
+
+    with Session(world["engine"]) as session:
+        session.execute(delete(Member).where(Member.id == member.id))
+        session.execute(delete(User).where(User.id == target.id))
+        session.commit()
+
+
+def test_non_admin_cannot_touch_userless_members(client, world):
+    headers = _auth(world["tokens"]["ADMIN"])
+    member = _create_userless_member(
+        client, headers, f"No Account {uuid.uuid4()}", "9876500997"
+    )
+    member_headers = _auth(world["tokens"]["member"])
+
+    resp = client.post(
+        "/api/v1/members",
+        json={"full_name": "Nope", "phone_number": "9876500996"},
+        headers=member_headers,
+    )
+    assert resp.status_code == 403, resp.text
+
+    resp = client.patch(
+        f"/api/v1/members/{member['id']}",
+        json={"occupation_summary": "x"},
+        headers=member_headers,
+    )
+    assert resp.status_code == 403, resp.text
+
+    resp = client.delete(f"/api/v1/members/{member['id']}", headers=member_headers)
+    assert resp.status_code == 403, resp.text
+
+    with Session(world["engine"]) as session:
+        session.execute(delete(Member).where(Member.id == member["id"]))
+        session.commit()
+
+
+def test_member_survives_a_hard_delete_of_its_user(client, world):
+    """ON DELETE SET NULL: removing a login must never destroy community data."""
+    engine = world["engine"]
+    headers = _auth(world["tokens"]["ADMIN"])
+    target = _create_user(engine, "MEMBER", _next_phone())
+    member = _create_member(engine, target.id, None)
+
+    with Session(engine) as session:
+        session.execute(
+            text("DELETE FROM users WHERE id = :id"), {"id": target.id}
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        # The FK is ON DELETE SET NULL: the member row survives and simply loses its link.
+        assert session.execute(
+            select(Member.id).where(Member.id == member.id)
+        ).scalar_one_or_none() == member.id
+        assert session.execute(
+            select(Member.user_id).where(Member.id == member.id)
+        ).scalar_one_or_none() is None
+
+        session.execute(delete(Member).where(Member.id == member.id))
+        session.commit()
+
+
+def test_two_members_may_have_no_user_account(client, world):
+    headers = _auth(world["tokens"]["ADMIN"])
+    a = _create_userless_member(client, headers, f"Null A {uuid.uuid4()}", "9876500995")
+    b = _create_userless_member(client, headers, f"Null B {uuid.uuid4()}", "9876500994")
+    assert a["user_id"] is None and b["user_id"] is None
+    assert a["id"] != b["id"]
+
+    with Session(world["engine"]) as session:
+        session.execute(delete(Member).where(Member.id.in_([a["id"], b["id"]])))
+        session.commit()

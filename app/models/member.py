@@ -32,8 +32,13 @@ class Member(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "members"
     __table_args__ = (UniqueConstraint("user_id", name="uq_members_user_id"),)
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    # A community member record is NOT the same thing as a login account. Imported /
+    # Google Sheet members have no User, and an Admin must be able to manage them, so
+    # the link is optional. `SET NULL` (not CASCADE) keeps the member profile when a
+    # User is removed - deleting a login must never delete community data. Postgres
+    # allows many NULLs under a UNIQUE constraint, so one-member-per-user still holds.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     group_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -84,7 +89,7 @@ class Member(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
         Boolean, default=False, nullable=False
     )
 
-    user: Mapped[User] = relationship(back_populates="member", lazy="selectin")
+    user: Mapped[User | None] = relationship(back_populates="member", lazy="selectin")
     group: Mapped[SocialGroup | None] = relationship(back_populates="members")
     location: Mapped[Location | None] = relationship(back_populates="members")
     family_members: Mapped[list[FamilyMember]] = relationship(

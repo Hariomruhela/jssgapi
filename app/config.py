@@ -118,11 +118,40 @@ class Settings(BaseSettings):
     msg91_timeout_seconds: float = 10.0
 
     # Cloudflare R2
+    # ``cloudflare_r2_endpoint`` must be the S3 API host
+    # ``https://<ACCOUNT_ID>.r2.cloudflarestorage.com``. The public
+    # ``r2.dev`` domain and custom public domains are read-only HTTP and are
+    # what belongs in ``cloudflare_r2_public_url``.
     cloudflare_r2_endpoint: str = ""
     cloudflare_r2_access_key: str = ""
     cloudflare_r2_secret_key: str = ""
     cloudflare_r2_bucket: str = ""
     cloudflare_r2_public_url: str = ""
+
+    @field_validator(
+        "cloudflare_r2_endpoint",
+        "cloudflare_r2_access_key",
+        "cloudflare_r2_secret_key",
+        "cloudflare_r2_bucket",
+        "cloudflare_r2_public_url",
+        mode="before",
+    )
+    @classmethod
+    def _normalise_cloudflare_r2(cls, value: object) -> object:
+        """Trim whitespace and one layer of quoting from the R2 settings.
+
+        SigV4 signs the exact bytes of the secret, so a value pasted out of the
+        Cloudflare dashboard with a trailing newline - or wrapped in quotes that
+        became part of the value - is a valid-looking setting that fails every
+        request with ``SignatureDoesNotMatch``. Normalising here keeps that
+        class of mistake out of the signing path entirely.
+        """
+        if not isinstance(value, str):
+            return value
+        cleaned = value.strip()
+        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in "\"'":
+            cleaned = cleaned[1:-1].strip()
+        return cleaned
 
     # Which backend stores uploaded media: "auto" (R2 when configured,
     # otherwise Postgres), "r2", "database", or "local". Postgres is the
