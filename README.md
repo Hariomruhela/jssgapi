@@ -344,6 +344,49 @@ CLOUDFLARE_R2_PUBLIC_URL=https://media.yourdomain.com
 Wire your domain to the bucket in the Cloudflare dashboard and add a CNAME to the R2
 bucket for a clean CDN-enabled public URL.
 
+If the bucket has no public domain, `media.url` points at
+`/api/v1/media/{id}/content`, which streams the bytes and serves public media
+anonymously. When a media row points at an object that is not in the bucket, that
+route answers `503 MEDIA_NOT_FOUND` rather than an unhandled `500`.
+
+### Google Drive photo links
+
+Member photos imported from the Google Sheet are `drive.google.com` share links,
+which the Flutter app cannot render with `Image.network`: an unshared file
+resolves to an `accounts.google.com` sign-in page, and a shared one to Drive's
+HTML preview. `DrivePhotoMigration` copies those bytes into R2 and repoints
+`member_photo_link` / `profile_photo_url` at a URL that returns `image/*` with no
+cookies and no headers.
+
+```bash
+# see what would change, write nothing (also the endpoint's default)
+.venv/bin/python -m scripts.migrate_drive_photos --dry-run
+
+# migrate, in batches
+.venv/bin/python -m scripts.migrate_drive_photos --apply --all
+```
+
+Or through the admin API, which defaults to `dry_run=true`:
+
+```
+POST /api/v1/media/migrate-drive-photos?dry_run=true
+```
+
+Requires the `media.migrate` permission (ADMIN / SUPER_ADMIN). Properties:
+
+- Nothing in Drive is modified. No file is shared, renamed, moved or deleted.
+- The original link is kept on the member as `profile_photo_drive_url` /
+  `spouse_photo_drive_url`, so a photo stays re-syncable from the sheet.
+- Idempotent: a photo is copied at most once, and later runs report
+  `already_migrated`. If a stored object later disappears, the preserved Drive
+  link is used to copy it again.
+- A photo that cannot be read is reported in `failures` with the member, the
+  field, the original link and the reason; it does not stop the batch.
+- A file is fetched through the configured service account, or anonymously when
+  it is shared "anyone with the link". A file that is private to both fails with a
+  reason naming the fix - either share the folder with the service account
+  address, or share the file "anyone with the link".
+
 ## Firebase Cloud Messaging
 
 Notifications flow: FastAPI → FCM → Flutter.

@@ -60,6 +60,21 @@ class Member(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
     blood_group: Mapped[str | None] = mapped_column(String(10), nullable=True)
     profile_photo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Photo links copied out of the Google Sheet. The sheet still holds Drive
+    # links, and the app can only render bytes over plain HTTP, so a Drive link
+    # is copied to R2 and the original is kept here for reference. Once
+    # ``*_r2_object_key`` is set the photo is considered migrated and the
+    # migration skips it.
+    profile_photo_drive_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    profile_photo_r2_object_key: Mapped[str | None] = mapped_column(
+        String(500), nullable=True
+    )
+    profile_photo_r2_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    spouse_photo_drive_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    spouse_photo_r2_object_key: Mapped[str | None] = mapped_column(
+        String(500), nullable=True
+    )
+    spouse_photo_r2_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     profile_data: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )

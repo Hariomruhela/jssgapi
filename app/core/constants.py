@@ -100,6 +100,7 @@ class AuditAction(str, Enum):
     ROLE_CHANGE = "ROLE_CHANGE"
     MEDIA_UPLOAD = "MEDIA_UPLOAD"
     MEDIA_DELETE = "MEDIA_DELETE"
+    MEDIA_MIGRATE = "MEDIA_MIGRATE"
 
 
 class FeeStatus(str, Enum):

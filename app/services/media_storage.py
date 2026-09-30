@@ -54,6 +54,23 @@ R2_API_HOST_SUFFIX = ".r2.cloudflarestorage.com"
 # only accepts this literal value.
 R2_REGION = "auto"
 
+# S3 error codes that mean "there is no object here". A missing object is a
+# storage state the caller can be told about; anything else is a failure of the
+# storage request itself.
+_MISSING_OBJECT_CODES = frozenset({"NoSuchKey", "NotFound", "NoSuchBucket", "404"})
+
+# Codes that mean the endpoint and the credentials disagree, or that the
+# credentials are rejected outright. These are deployment faults and are logged
+# at error level with the setting names to check.
+_CREDENTIAL_ERROR_CODES = frozenset(
+    {
+        "SignatureDoesNotMatch",
+        "InvalidAccessKeyId",
+        "AccessDenied",
+        "InvalidToken",
+    }
+)
+
 # Cloudflare API tokens carry the version they were issued under. An R2 secret
 # access key never looks like one, and mixing the two up is a common cause of
 # ``SignatureDoesNotMatch``.
@@ -191,8 +208,38 @@ class StorageBackend(ABC):
         """Return the stored bytes."""
 
     @abstractmethod
+    def object_exists(self, object_key: str) -> bool:
+        """Report whether the object is present, without fetching the body."""
+
+    def find_object_key(self, prefix: str) -> str | None:
+        """Return an existing key under ``prefix``, if the backend can tell.
+
+        The photo migration uses this to recognise bytes it already copied even
+        if the database lost the record of them. Backends that cannot list
+        return ``None``, which the caller reads as "not there".
+        """
+        return None
+
+    @abstractmethod
     def delete_object(self, object_key: str) -> None:
         """Remove the object; missing objects are not an error."""
+
+
+def _error_code(exc: BaseException) -> str:
+    """Best-effort extraction of an S3 error code from a boto3 exception.
+
+    botocore is imported lazily so local development works without it, so the
+    error is inspected structurally instead of by type.
+    """
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return ""
+    error = response.get("Error")
+    code = error.get("Code") if isinstance(error, dict) else None
+    if not code:
+        status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        code = str(status) if status else ""
+    return str(code)
 
 
 def _validate_object_key(object_key: str) -> str:
@@ -236,6 +283,9 @@ class LocalDiskStorage(StorageBackend):
                 "Media object is missing from storage", "MEDIA_NOT_FOUND"
             )
         return path.read_bytes()
+
+    def object_exists(self, object_key: str) -> bool:
+        return self._path(object_key).is_file()
 
     def delete_object(self, object_key: str) -> None:
         path = self._path(object_key)
@@ -323,6 +373,16 @@ class DatabaseStorage(StorageBackend):
                 "Media object is missing from storage", "MEDIA_NOT_FOUND"
             )
         return bytes(content)
+
+    def object_exists(self, object_key: str) -> bool:
+        key = _validate_object_key(object_key)
+        engine = self._get_engine()
+        with engine.connect() as connection:
+            found = connection.execute(
+                text("SELECT 1 FROM media_objects WHERE object_key = :key"),
+                {"key": key},
+            ).scalar()
+        return found is not None
 
     def delete_object(self, object_key: str) -> None:
         key = _validate_object_key(object_key)
@@ -426,10 +486,26 @@ class CloudflareR2Client(StorageBackend):
         return ""
 
     def read_bytes(self, object_key: str) -> bytes:
-        response = self._client().get_object(
-            Bucket=self.bucket, Key=_validate_object_key(object_key)
-        )
+        key = _validate_object_key(object_key)
+        try:
+            response = self._client().get_object(Bucket=self.bucket, Key=key)
+        except ServiceUnavailableException:
+            raise
+        except Exception as exc:
+            raise self._map_error(key, exc) from exc
         return bytes(response["Body"].read())
+
+    def object_exists(self, object_key: str) -> bool:
+        key = _validate_object_key(object_key)
+        try:
+            self._client().head_object(Bucket=self.bucket, Key=key)
+        except ServiceUnavailableException:
+            raise
+        except Exception as exc:
+            if _error_code(exc) in _MISSING_OBJECT_CODES:
+                return False
+            raise self._map_error(key, exc) from exc
+        return True
 
     def delete_object(self, object_key: str) -> None:
         key = _validate_object_key(object_key)
@@ -439,6 +515,49 @@ class CloudflareR2Client(StorageBackend):
             raise
         except Exception:
             logger.warning("Could not delete R2 object %s", key, exc_info=True)
+
+    def find_object_key(self, prefix: str) -> str | None:
+        prefix = _validate_object_key(prefix)
+        try:
+            response = self._client().list_objects_v2(
+                Bucket=self.bucket, Prefix=prefix, MaxKeys=2
+            )
+        except Exception as exc:
+            raise self._map_error(prefix, exc) from exc
+        contents = response.get("Contents") or []
+        if not contents:
+            return None
+        return str(contents[0].get("Key") or "") or None
+
+    def _map_error(self, key: str, exc: Exception) -> ServiceUnavailableException:
+        """Turn a boto3 failure into a diagnosable service error.
+
+        A ``media`` row can outlive its object - the bucket was emptied, the
+        wrong bucket is configured, or the object was deleted out of band. The
+        raw boto3 exception used to escape the media route as an opaque 500; it
+        is a storage state, not a server fault, and the other backends already
+        report a missing object as ``MEDIA_NOT_FOUND``.
+        """
+        code = _error_code(exc)
+        if code in _MISSING_OBJECT_CODES:
+            logger.warning("R2 object %s is not in bucket %s", key, self.bucket)
+            return ServiceUnavailableException(
+                "Media object is missing from storage", "MEDIA_NOT_FOUND"
+            )
+
+        message = f"R2 request failed for object {key}"
+        if code:
+            message = f"{message} ({code})"
+        if code in _CREDENTIAL_ERROR_CODES:
+            logger.error(
+                "R2 rejected the request for %s with %s - check "
+                "CLOUDFLARE_R2_ENDPOINT and the R2 access key pair",
+                key,
+                code,
+            )
+        else:
+            logger.warning("R2 request for %s failed: %s", key, code or exc)
+        return ServiceUnavailableException(message, "MEDIA_STORAGE_ERROR")
 
 
 def validate_storage_configuration() -> str:

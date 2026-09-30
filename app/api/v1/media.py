@@ -21,12 +21,18 @@ from app.models.member import Member
 from app.models.user import User
 from app.repositories.media_repository import MediaRepository
 from app.schemas.media import MediaOut
+from app.services.drive_photo_migration import (
+    DEFAULT_LIMIT,
+    MAX_LIMIT,
+    DrivePhotoMigration,
+)
 from app.services.media_service import MediaService
 
 router = APIRouter(prefix="/media", tags=["Media"])
 
 UPLOAD = Depends(require_permission(Permission.MEDIA_UPLOAD))
 DELETE = Depends(require_permission(Permission.MEDIA_DELETE))
+MIGRATE = Depends(require_permission(Permission.MEDIA_MIGRATE))
 
 
 @router.get("")
@@ -73,10 +79,55 @@ async def upload_media(
     return created("Media uploaded successfully", MediaOut.model_validate(media))
 
 
-@router.get("/{media_id}/content", include_in_schema=True)
-async def get_media_content(
-    media_id: UUID, db: DBSession, user: OptionalUser
+@router.post("/migrate-drive-photos", dependencies=[MIGRATE])
+async def migrate_drive_photos(
+    request: Request,
+    current_user: CurrentUser,
+    db: DBSession,
+    dry_run: bool = Query(
+        True,
+        description="Report what would change without writing anything. "
+        "Set false to actually copy the photos into R2.",
+    ),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    member_id: UUID | None = Query(
+        None, description="Migrate a single member instead of a batch."
+    ),
 ):
+    """Copy member photos out of Google Drive into R2.
+
+    Member photos imported from the Google Sheet are ``drive.google.com`` share
+    links, which the mobile app cannot render: an unshared file resolves to an
+    ``accounts.google.com`` sign-in page and a shared one to Drive's HTML
+    preview. This fetches the bytes once, stores them in the project's R2
+    bucket and repoints ``member_photo_link`` / ``profile_photo_url`` at a URL
+    that returns ``image/*`` with no cookies and no headers.
+
+    Defaults to ``dry_run=true``. Nothing in Drive is modified: no file is
+    shared, renamed, moved or deleted, and the original link is preserved on the
+    member as ``*_photo_drive_url``.
+
+    Safe to re-run - a photo is copied at most once and reports
+    ``already_migrated`` afterwards. A photo that cannot be read is recorded in
+    ``failures`` and does not stop the rest of the batch.
+    """
+    migration = DrivePhotoMigration(db, base_url=str(request.base_url))
+    ip = request.client.host if request.client else None
+    summary = await migration.run(
+        dry_run=dry_run,
+        limit=limit,
+        offset=offset,
+        member_id=member_id,
+        user_id=current_user.id,
+        ip_address=ip,
+        user_agent=request.headers.get("user-agent"),
+    )
+    return ok("Drive photo migration finished", summary.to_dict())
+
+
+@router.get("/{media_id}/content", include_in_schema=True)
+async def get_media_content(media_id: UUID, db: DBSession, user: OptionalUser):
     """Stream the stored bytes.
 
     This is what makes ``media.url`` renderable: uploads without a public CDN

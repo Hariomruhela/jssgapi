@@ -84,6 +84,7 @@ class Permission:
 
     MEDIA_UPLOAD = "media.upload"
     MEDIA_DELETE = "media.delete"
+    MEDIA_MIGRATE = "media.migrate"
 
     PAYMENT_READ = "payment.read"
     PAYMENT_MANAGE = "payment.manage"
@@ -143,6 +144,10 @@ FEDERATION_ADMIN_PERMS: set[str] = {
 ADMIN_PERMS: set[str] = FEDERATION_ADMIN_PERMS | {
     Permission.USER_MANAGE,
     Permission.ROLE_MANAGE,
+    # Bulk rewrites of stored photo links in production. Deliberately not part
+    # of FEDERATION_ADMIN_PERMS: it is a platform-wide operation, not a
+    # group-scoped one.
+    Permission.MEDIA_MIGRATE,
 }
 
 ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
@@ -180,6 +185,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
         Permission.ADVERTISEMENT_APPROVE,
         Permission.MEDIA_UPLOAD,
         Permission.MEDIA_DELETE,
+        Permission.MEDIA_MIGRATE,
         Permission.PAYMENT_READ,
         Permission.PAYMENT_MANAGE,
         Permission.FEE_READ,

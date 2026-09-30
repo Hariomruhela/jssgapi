@@ -40,6 +40,9 @@ class _BrokenStorage(StorageBackend):
             "Media storage is not available", "MEDIA_STORAGE_UNAVAILABLE"
         )
 
+    def object_exists(self, object_key):
+        return False
+
     def delete_object(self, object_key):
         return None
 

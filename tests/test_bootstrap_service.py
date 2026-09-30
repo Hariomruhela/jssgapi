@@ -33,7 +33,7 @@ async def test_seeded_permissions_match_the_permission_enum():
         await session.commit()
 
     assert set(models) == set(_collect_permissions())
-    assert len(models) == 42
+    assert len(models) == 43
 
     async with async_session_factory() as session:
         count = await session.scalar(select(func.count()).select_from(PermissionModel))

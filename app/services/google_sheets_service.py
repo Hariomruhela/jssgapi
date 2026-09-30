@@ -16,7 +16,82 @@ from app.core.exceptions import (
 logger = logging.getLogger(__name__)
 
 # Read-only: the import never writes back to the sheet.
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+# Reading member photos out of Drive needs this. The scope is requested
+# separately rather than added to SHEETS_SCOPES: a service-account token can
+# only be minted for scopes enabled on the Cloud project, so widening the
+# Sheets scope could break a sync that works today. The Drive downloader falls
+# back to an unauthenticated fetch for files shared "anyone with the link", so
+# a project without the Drive scope still migrates those files.
+DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+SCOPES = SHEETS_SCOPES
+
+
+def _credentials_from_inline_json(raw: str, scopes: list[str]) -> Any:
+    from google.oauth2 import service_account
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValidationException(
+            "GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is not valid JSON: "
+            f"{exc.msg} (line {exc.lineno})"
+        ) from exc
+    private_key = payload.get("private_key")
+    if isinstance(private_key, str) and "\\n" in private_key:
+        # Keys pasted into a single-line env var keep literal "\n".
+        payload["private_key"] = private_key.replace("\\n", "\n")
+    missing = [k for k in ("type", "client_email", "private_key") if not payload.get(k)]
+    if missing:
+        raise ValidationException(
+            "GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is missing: " + ", ".join(missing)
+        )
+    return service_account.Credentials.from_service_account_info(
+        payload, scopes=scopes
+    )
+
+
+def _credentials_from_file(path: str, scopes: list[str]) -> Any:
+    from google.oauth2 import service_account
+
+    try:
+        return service_account.Credentials.from_service_account_file(
+            path, scopes=scopes
+        )
+    except OSError as exc:
+        raise ValidationException(
+            f"Service-account key file could not be read: {exc.strerror or exc}"
+        ) from exc
+    except ValueError as exc:
+        raise ValidationException(
+            f"Service-account key file is not a valid service-account JSON: {exc}"
+        ) from exc
+
+
+def _credentials_from_adc(scopes: list[str]) -> Any:
+    import google.auth
+
+    credentials, _ = google.auth.default(scopes=scopes)
+    return credentials
+
+
+def load_google_credentials(settings: Any, scopes: list[str]) -> Any:
+    """Resolve service-account credentials for ``scopes``, without logging them.
+
+    Single source of truth for every Google call in the project: the sheet sync
+    and the Drive photo migration read the same env var and the same key file
+    and differ only in the scopes they ask for.
+    """
+    inline = (settings.google_sheets_service_account_json or "").strip()
+    if inline:
+        logger.info("google credentials: inline service account json")
+        return _credentials_from_inline_json(inline, scopes)
+    path = (settings.google_application_credentials or "").strip()
+    if path:
+        logger.info("google credentials: key file")
+        return _credentials_from_file(path, scopes)
+    logger.info("google credentials: application default credentials")
+    return _credentials_from_adc(scopes)
 
 _SPREADSHEET_ID_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
 _SPREADSHEET_URL_RE = re.compile(r"/spreadsheets/d/([A-Za-z0-9_-]+)")
@@ -80,64 +155,17 @@ class GoogleSheetsService:
     # credentials
     # ------------------------------------------------------------------
     def _credentials_from_inline_json(self, raw: str) -> Any:
-        from google.oauth2 import service_account
-
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValidationException(
-                "GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is not valid JSON: "
-                f"{exc.msg} (line {exc.lineno})"
-            ) from exc
-        private_key = payload.get("private_key")
-        if isinstance(private_key, str) and "\\n" in private_key:
-            # Keys pasted into a single-line env var keep literal "\n".
-            payload["private_key"] = private_key.replace("\\n", "\n")
-        missing = [
-            k for k in ("type", "client_email", "private_key") if not payload.get(k)
-        ]
-        if missing:
-            raise ValidationException(
-                "GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is missing: " + ", ".join(missing)
-            )
-        return service_account.Credentials.from_service_account_info(
-            payload, scopes=SCOPES
-        )
+        return _credentials_from_inline_json(raw, SCOPES)
 
     def _credentials_from_file(self, path: str) -> Any:
-        from google.oauth2 import service_account
-
-        try:
-            return service_account.Credentials.from_service_account_file(
-                path, scopes=SCOPES
-            )
-        except OSError as exc:
-            raise ValidationException(
-                f"Service-account key file could not be read: {exc.strerror or exc}"
-            ) from exc
-        except ValueError as exc:
-            raise ValidationException(
-                f"Service-account key file is not a valid service-account JSON: {exc}"
-            ) from exc
+        return _credentials_from_file(path, SCOPES)
 
     def _credentials_from_adc(self) -> Any:
-        import google.auth
-
-        credentials, _ = google.auth.default(scopes=SCOPES)
-        return credentials
+        return _credentials_from_adc(SCOPES)
 
     def credentials(self) -> Any:
         """Resolve service-account credentials without ever logging them."""
-        inline = (self.settings.google_sheets_service_account_json or "").strip()
-        if inline:
-            logger.info("google sheets credentials: inline service account json")
-            return self._credentials_from_inline_json(inline)
-        path = (self.settings.google_application_credentials or "").strip()
-        if path:
-            logger.info("google sheets credentials: key file")
-            return self._credentials_from_file(path)
-        logger.info("google sheets credentials: application default credentials")
-        return self._credentials_from_adc()
+        return load_google_credentials(self.settings, SCOPES)
 
     def _sheets_api(self) -> Any:
         try:
