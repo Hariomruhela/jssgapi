@@ -10,7 +10,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.core.constants import AuditAction, MemberStatus, RoleName
+from app.core.constants import AuditAction, MemberStatus, RoleName, resolve_role_name
 from app.core.exceptions import (
     AlreadyExistsException,
     BadRequestException,
@@ -199,9 +199,9 @@ class AuthService:
             role_name = RoleName.MEMBER.value
         else:
             candidate = role.strip().upper()
-            if candidate not in (RoleName.MEMBER.value, RoleName.ADMIN.value):
+            if candidate != RoleName.SUPER_ADMIN.value:
                 raise BadRequestException(
-                    "Invalid role. Allowed roles: MEMBER, ADMIN"
+                    "Invalid role. Allowed roles: MEMBER, SUPER_ADMIN"
                 )
             role_name = candidate
         role_result = await self.session.execute(
@@ -310,7 +310,7 @@ class AuthService:
     ) -> dict:
         """OAuth2 password-flow token endpoint used by Swagger's Authorize.
 
-        username is treated as the ADMIN account's phone number. Only ADMIN
+        username is treated as the account's phone number. Only SUPER_ADMIN
         accounts are allowed to authenticate through this flow.
         """
         user = await self.users.get_active_by_phone(
@@ -319,9 +319,10 @@ class AuthService:
         if user is None or not verify_password(password, user.password_hash):
             raise UnauthorizedException("Invalid phone number or password")
 
-        if user.role is None or user.role.name != RoleName.ADMIN.value:
+        resolved = resolve_role_name(user.role.name) if user.role else None
+        if resolved is not RoleName.SUPER_ADMIN:
             raise ForbiddenException(
-                "Only ADMIN accounts can authenticate for Swagger access"
+                "Only SUPER_ADMIN accounts can authenticate for Swagger access"
             )
 
         user.last_login_at = datetime.now(UTC)

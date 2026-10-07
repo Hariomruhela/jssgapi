@@ -29,6 +29,15 @@ class Media(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     owner_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True
     )
+    # The social group this file belongs to. NULL means a personal file (a member
+    # profile photo, for instance) that is reachable through its owner rather than
+    # through the group gallery.
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("social_groups.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     file_type: Mapped[str] = mapped_column(String(100), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(100), nullable=False)

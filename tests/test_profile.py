@@ -33,6 +33,32 @@ class _CdnStorage:
         return None
 
 
+class _ServingStorage:
+    """In-memory storage with no public URL, so the app serves the bytes.
+
+    ``media.url`` then points at the ``/api/v1/media/.../content`` route, which
+    is what the photo-link test needs to fetch - and it keeps that test off the
+    real bucket.
+    """
+
+    available = True
+    serves_public_urls = False
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    def upload_bytes(self, object_key, data, mime_type):
+        self.objects[object_key] = data
+        return object_key
+
+    def read_bytes(self, object_key):
+        return self.objects[object_key]
+
+    def delete_object(self, object_key):
+        self.objects.pop(object_key, None)
+        return None
+
+
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as test_client:
@@ -141,9 +167,34 @@ def test_profile_get_returns_the_complete_shape(client: TestClient):
             "daughter_dob",
             "daughter_education",
             "daughter_occupation",
+            "unmarried_son1_details",
+            "unmarried_son1_dob",
+            "unmarried_son1_education",
+            "unmarried_son1_occupation",
+            "unmarried_son2_details",
+            "unmarried_son2_dob",
+            "unmarried_son2_education",
+            "unmarried_son2_occupation",
+            "unmarried_son3_details",
+            "unmarried_son3_dob",
+            "unmarried_son3_education",
+            "unmarried_son3_occupation",
+            "unmarried_daughter1_details",
+            "unmarried_daughter1_dob",
+            "unmarried_daughter1_education",
+            "unmarried_daughter1_occupation",
+            "unmarried_daughter2_details",
+            "unmarried_daughter2_dob",
+            "unmarried_daughter2_education",
+            "unmarried_daughter2_occupation",
+            "unmarried_daughter3_details",
+            "unmarried_daughter3_dob",
+            "unmarried_daughter3_education",
+            "unmarried_daughter3_occupation",
             "member_education",
             "member_occupation",
             "company_name",
+            "business_address",
             "group_designation",
             "social_group_name",
             "interest_fields",
@@ -221,9 +272,36 @@ def test_profile_update_accepts_all_profile_fields(client: TestClient):
         "daughter_dob": "2012-05-06",
         "daughter_education": "Graduate",
         "daughter_occupation": "Doctor",
+        # Slot 1 has two spellings; they are mirrored, so both must read back
+        # the same values.
+        "unmarried_son1_details": "Son Name",
+        "unmarried_son1_dob": "2010-04-05",
+        "unmarried_son1_education": "Graduate",
+        "unmarried_son1_occupation": "Engineer",
+        "unmarried_son2_details": "Second Son",
+        "unmarried_son2_dob": "2011-06-07",
+        "unmarried_son2_education": "Bachelor's degree",
+        "unmarried_son2_occupation": "Student",
+        "unmarried_son3_details": "Third Son",
+        "unmarried_son3_dob": "2013-08-09",
+        "unmarried_son3_education": "School",
+        "unmarried_son3_occupation": "Student",
+        "unmarried_daughter1_details": "Daughter Name",
+        "unmarried_daughter1_dob": "2012-05-06",
+        "unmarried_daughter1_education": "Graduate",
+        "unmarried_daughter1_occupation": "Doctor",
+        "unmarried_daughter2_details": "Second Daughter",
+        "unmarried_daughter2_dob": "2014-10-11",
+        "unmarried_daughter2_education": "School",
+        "unmarried_daughter2_occupation": "Student",
+        "unmarried_daughter3_details": "Third Daughter",
+        "unmarried_daughter3_dob": "2016-12-01",
+        "unmarried_daughter3_education": "School",
+        "unmarried_daughter3_occupation": "Student",
         "member_education": "Bachelor's degree",
         "member_occupation": "Business",
         "company_name": "Example Company",
+        "business_address": "7 Commerce House, Example City",
         "group_designation": "Secretary",
         "social_group_name": "Example Group",
         "interest_fields": "Music, travel",
@@ -403,15 +481,24 @@ def test_profile_photo_sanitizes_long_filenames(
         _cleanup([phone])
 
 
-def test_profile_photo_url_actually_serves_the_image(client: TestClient):
+def test_profile_photo_url_actually_serves_the_image(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
     """Regression guard: the stored photo_link must be a fetchable URL.
 
     Previously an unconfigured environment returned '/dev-media/<key>' - a path
     with no route behind it - so the photo_link was stored but never rendered.
+    The storage backend is stubbed so the link points at this app's own media
+    route instead of whatever bucket the environment happens to have.
     """
     phone = _next_phone()
     try:
         token = _register(client, phone)
+        # One instance: the upload and the later read must see the same bytes.
+        storage = _ServingStorage()
+        monkeypatch.setattr(
+            "app.services.media_service.get_storage", lambda: storage
+        )
 
         response = client.post(
             "/api/v1/profile/photo",
@@ -436,7 +523,6 @@ def test_profile_photo_url_actually_serves_the_image(client: TestClient):
         assert profile["member_photo_link"] == photo_link
     finally:
         _cleanup([phone])
-
 
 
 def test_profile_photo_rejects_files_over_five_megabytes(client: TestClient):

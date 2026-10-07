@@ -120,16 +120,12 @@ async def find_missing_columns(session: AsyncSession) -> dict[str, list[str]]:
 
 
 async def find_missing_tables(session: AsyncSession) -> list[str]:
-    rows = (
-        await session.execute(_ALL_TABLES_SQL, {"schema": SCHEMA})
-    ).scalars().all()
+    rows = (await session.execute(_ALL_TABLES_SQL, {"schema": SCHEMA})).scalars().all()
     existing = set(rows)
     return sorted(set(Base.metadata.tables) - existing - {"alembic_version"})
 
 
-async def _add_column(
-    session: AsyncSession, table_name: str, column: Any
-) -> None:
+async def _add_column(session: AsyncSession, table_name: str, column: Any) -> None:
     pg_type = _postgres_type(column)
     quoted_table = f'"{table_name}"'
     quoted_column = f'"{column.name}"'
@@ -179,9 +175,22 @@ async def ensure_schema(session: AsyncSession) -> list[str]:
     """
     try:
         missing = await find_missing_columns(session)
+        absent_tables = set(await find_missing_tables(session))
     except Exception:
         logger.exception("Schema guard could not read the live schema")
         return []
+
+    if absent_tables:
+        # ``ALTER TABLE`` cannot run against a table that does not exist, yet
+        # every one of its columns is reported missing, so each ADD COLUMN
+        # would fail with UndefinedTableError on every cold start. Creating a
+        # whole table is Alembic's job (``report_missing_tables`` points at
+        # ``alembic upgrade head``), so the guard stays out of the way.
+        logger.warning(
+            "Schema guard: skipping column repair for missing table(s): %s. "
+            "Run `alembic upgrade head` to create them.",
+            ", ".join(sorted(absent_tables)),
+        )
 
     if not missing:
         logger.info("Schema guard: live schema matches the models.")
@@ -189,6 +198,8 @@ async def ensure_schema(session: AsyncSession) -> list[str]:
 
     repaired: list[str] = []
     for table_name, columns in missing.items():
+        if table_name in absent_tables:
+            continue
         table = Base.metadata.tables[table_name]
         for column_name in columns:
             try:

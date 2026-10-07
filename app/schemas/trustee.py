@@ -8,6 +8,9 @@ from pydantic import BaseModel, ConfigDict
 
 class TrusteeCreate(BaseModel):
     user_id: UUID | None = None
+    # The member this seat belongs to. Optional so a trustee can still be recorded
+    # for someone who is not a member of the directory.
+    member_id: UUID | None = None
     group_id: UUID
     first_name: str
     last_name: str
@@ -24,6 +27,7 @@ class TrusteeCreate(BaseModel):
 
 class TrusteeUpdate(BaseModel):
     user_id: UUID | None = None
+    member_id: UUID | None = None
     group_id: UUID | None = None
     first_name: str | None = None
     last_name: str | None = None
@@ -43,6 +47,7 @@ class TrusteeOut(BaseModel):
 
     id: UUID
     user_id: UUID | None = None
+    member_id: UUID | None = None
     group_id: UUID | None = None
     first_name: str
     last_name: str

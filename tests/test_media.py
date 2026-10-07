@@ -548,7 +548,7 @@ def _grant_media_upload(phone: str) -> None:
                 select(Role.id)
                 .join(RolePermission, RolePermission.role_id == Role.id)
                 .join(Permission, Permission.id == RolePermission.permission_id)
-                .where(Permission.name == "media.upload", Role.name == "ADMIN")
+                .where(Permission.name == "media.upload", Role.name == "SUPER_ADMIN")
             ).scalar_one()
             connection.execute(
                 User.__table__.update()

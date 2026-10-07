@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
-from app.core.constants import RoleName
+from app.core.constants import LEGACY_ROLE_ALIASES, RoleName
 from app.core.permissions import ROLE_PERMISSIONS, Permission
 from app.core.security import hash_password
 from app.models.user import Permission as PermissionModel
@@ -53,6 +53,8 @@ async def _seed_roles(
         role = await Role.get_or_create(session, RoleName(role_name), description)
         role_models[role_name] = role
 
+    await _retire_legacy_roles(session, role_models)
+
     # Load the existing grants for every role in one query. Checking each
     # (role, permission) pair separately meant ~250 round trips, which pushed
     # startup past the 60s limit on a hosted Postgres.
@@ -78,6 +80,38 @@ async def _seed_roles(
                 )
             )
     return role_models
+
+
+async def _retire_legacy_roles(
+    session: AsyncSession, role_models: dict[str, Role]
+) -> None:
+    """Move accounts off the retired admin tiers and drop those role rows.
+
+    Mirrors migration ``f2b3c4d5e6f7``. Vercel has no migration step, so this is
+    what actually collapses the tiers on a deployed environment; running it here
+    as well keeps a database that skipped the migration consistent with the
+    authorization code.
+
+    Safe to re-run: after the first pass no user references a retired role, so the
+    UPDATE matches nothing and the row is already gone.
+    """
+    result = await session.execute(
+        select(Role).where(Role.name.in_(list(LEGACY_ROLE_ALIASES)))
+    )
+    for role in result.scalars().all():
+        survivor = role_models[LEGACY_ROLE_ALIASES[role.name]]
+        moved = await session.execute(select(User.id).where(User.role_id == role.id))
+        count = len(moved.scalars().all())
+        await session.execute(
+            update(User).where(User.role_id == role.id).values(role_id=survivor.id)
+        )
+        await session.delete(role)
+        logger.warning(
+            "Retired role %s: moved %d account(s) to %s",
+            role.name,
+            count,
+            survivor.name,
+        )
 
 
 async def _create_default_super_admin(
@@ -134,9 +168,6 @@ async def bootstrap_app(session_factory: async_sessionmaker[AsyncSession]) -> No
 def _role_descriptions() -> dict[str, str]:
     return {
         RoleName.SUPER_ADMIN.value: "Super administrator with full platform access",
-        RoleName.FEDERATION_ADMIN.value: "Administrator for the entire federation",
-        RoleName.ADMIN.value: "Platform administrator with federation-level access",
-        RoleName.REGIONAL_ADMIN.value: "Administrator for a region",
-        RoleName.GROUP_ADMIN.value: "Administrator for a social group",
+        RoleName.GROUP_ADMIN.value: "Administrator for a single social group",
         RoleName.MEMBER.value: "Registered community member",
     }

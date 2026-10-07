@@ -11,10 +11,7 @@ if TYPE_CHECKING:
 ROLE_HIERARCHY: dict[RoleName, int] = {
     RoleName.MEMBER: 1,
     RoleName.GROUP_ADMIN: 2,
-    RoleName.REGIONAL_ADMIN: 3,
-    RoleName.ADMIN: 4,
-    RoleName.FEDERATION_ADMIN: 4,
-    RoleName.SUPER_ADMIN: 5,
+    RoleName.SUPER_ADMIN: 3,
 }
 
 
@@ -53,6 +50,9 @@ class Permission:
     GROUP_CREATE = "group.create"
     GROUP_UPDATE = "group.update"
     GROUP_DELETE = "group.delete"
+    # Attaching and detaching members is membership management, not a group
+    # settings edit, so it is gated separately from group.update.
+    GROUP_MEMBER_MANAGE = "group.member_manage"
 
     TRUSTEE_READ = "trustee.read"
     TRUSTEE_CREATE = "trustee.create"
@@ -82,6 +82,7 @@ class Permission:
     ADVERTISEMENT_CREATE = "advertisement.create"
     ADVERTISEMENT_APPROVE = "advertisement.approve"
 
+    MEDIA_READ = "media.read"
     MEDIA_UPLOAD = "media.upload"
     MEDIA_DELETE = "media.delete"
     MEDIA_MIGRATE = "media.migrate"
@@ -101,55 +102,6 @@ class Permission:
     ROLE_MANAGE = "role.manage"
 
 
-FEDERATION_ADMIN_PERMS: set[str] = {
-    Permission.MEMBER_READ,
-    Permission.MEMBER_CREATE,
-    Permission.MEMBER_UPDATE,
-    Permission.MEMBER_DELETE,
-    Permission.MEMBER_APPROVE,
-    Permission.GROUP_READ,
-    Permission.GROUP_CREATE,
-    Permission.GROUP_UPDATE,
-    Permission.TRUSTEE_READ,
-    Permission.TRUSTEE_CREATE,
-    Permission.TRUSTEE_UPDATE,
-    Permission.TRUSTEE_DELETE,
-    Permission.LOCATION_READ,
-    Permission.LOCATION_CREATE,
-    Permission.LOCATION_UPDATE,
-    Permission.EVENT_READ,
-    Permission.EVENT_CREATE,
-    Permission.EVENT_UPDATE,
-    Permission.EVENT_DELETE,
-    Permission.NEWS_READ,
-    Permission.NEWS_CREATE,
-    Permission.NEWS_PUBLISH,
-    Permission.NEWS_UPDATE,
-    Permission.NOTIFICATION_READ,
-    Permission.NOTIFICATION_SEND,
-    Permission.ADVERTISEMENT_READ,
-    Permission.ADVERTISEMENT_CREATE,
-    Permission.ADVERTISEMENT_APPROVE,
-    Permission.MEDIA_UPLOAD,
-    Permission.MEDIA_DELETE,
-    Permission.PAYMENT_READ,
-    Permission.PAYMENT_MANAGE,
-    Permission.FEE_READ,
-    Permission.FEE_MANAGE,
-    Permission.REPORT_VIEW,
-    Permission.AUDIT_READ,
-    Permission.USER_READ,
-}
-
-ADMIN_PERMS: set[str] = FEDERATION_ADMIN_PERMS | {
-    Permission.USER_MANAGE,
-    Permission.ROLE_MANAGE,
-    # Bulk rewrites of stored photo links in production. Deliberately not part
-    # of FEDERATION_ADMIN_PERMS: it is a platform-wide operation, not a
-    # group-scoped one.
-    Permission.MEDIA_MIGRATE,
-}
-
 ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
     RoleName.SUPER_ADMIN: {
         Permission.MEMBER_READ,
@@ -161,6 +113,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
         Permission.GROUP_CREATE,
         Permission.GROUP_UPDATE,
         Permission.GROUP_DELETE,
+        Permission.GROUP_MEMBER_MANAGE,
         Permission.TRUSTEE_READ,
         Permission.TRUSTEE_CREATE,
         Permission.TRUSTEE_UPDATE,
@@ -183,6 +136,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
         Permission.ADVERTISEMENT_READ,
         Permission.ADVERTISEMENT_CREATE,
         Permission.ADVERTISEMENT_APPROVE,
+        Permission.MEDIA_READ,
         Permission.MEDIA_UPLOAD,
         Permission.MEDIA_DELETE,
         Permission.MEDIA_MIGRATE,
@@ -196,19 +150,20 @@ ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
         Permission.USER_MANAGE,
         Permission.ROLE_MANAGE,
     },
-    RoleName.ADMIN: ADMIN_PERMS,
-    RoleName.FEDERATION_ADMIN: FEDERATION_ADMIN_PERMS,
-    RoleName.REGIONAL_ADMIN: {
+    # A GROUP_ADMIN runs one social group. Group scoping is enforced separately by
+    # `app/core/scope.py` (the group comes from the authenticated User), so every
+    # permission here is a "may attempt this", not "may do this anywhere".
+    RoleName.GROUP_ADMIN: {
         Permission.MEMBER_READ,
         Permission.MEMBER_CREATE,
         Permission.MEMBER_UPDATE,
         Permission.MEMBER_APPROVE,
         Permission.GROUP_READ,
-        Permission.GROUP_CREATE,
-        Permission.GROUP_UPDATE,
+        Permission.GROUP_MEMBER_MANAGE,
         Permission.TRUSTEE_READ,
         Permission.TRUSTEE_CREATE,
         Permission.TRUSTEE_UPDATE,
+        Permission.TRUSTEE_DELETE,
         Permission.LOCATION_READ,
         Permission.EVENT_READ,
         Permission.EVENT_CREATE,
@@ -217,24 +172,10 @@ ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
         Permission.NEWS_CREATE,
         Permission.NOTIFICATION_READ,
         Permission.ADVERTISEMENT_READ,
-        Permission.ADVERTISEMENT_CREATE,
+        Permission.MEDIA_READ,
         Permission.MEDIA_UPLOAD,
         Permission.PAYMENT_READ,
         Permission.FEE_READ,
-    },
-    RoleName.GROUP_ADMIN: {
-        Permission.MEMBER_READ,
-        Permission.MEMBER_CREATE,
-        Permission.MEMBER_UPDATE,
-        Permission.TRUSTEE_READ,
-        Permission.LOCATION_READ,
-        Permission.EVENT_READ,
-        Permission.EVENT_CREATE,
-        Permission.NEWS_READ,
-        Permission.NOTIFICATION_READ,
-        Permission.ADVERTISEMENT_READ,
-        Permission.MEDIA_UPLOAD,
-        Permission.PAYMENT_READ,
     },
     RoleName.MEMBER: {
         Permission.MEMBER_READ,
@@ -245,6 +186,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
         Permission.NEWS_READ,
         Permission.NOTIFICATION_READ,
         Permission.ADVERTISEMENT_READ,
+        Permission.MEDIA_READ,
     },
 }
 

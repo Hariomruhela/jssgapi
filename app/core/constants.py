@@ -4,30 +4,72 @@ from enum import Enum
 
 
 class RoleName(str, Enum):
+    """The three roles the platform recognises.
+
+    ``SUPER_ADMIN`` is the only platform-wide administrator (React Admin Panel).
+    ``GROUP_ADMIN`` administers exactly one social group (Flutter admin app).
+    ``MEMBER`` is the community member (Flutter member app).
+    """
+
     SUPER_ADMIN = "SUPER_ADMIN"
-    FEDERATION_ADMIN = "FEDERATION_ADMIN"
-    ADMIN = "ADMIN"
-    REGIONAL_ADMIN = "REGIONAL_ADMIN"
     GROUP_ADMIN = "GROUP_ADMIN"
     MEMBER = "MEMBER"
 
 
-# Canonical lookup: the six RoleName values are the ONLY roles the system recognises.
+# Canonical lookup: the three RoleName values are the ONLY roles the system recognises.
 # The `roles` table is populated from external sources (Excel / Google Sheet imports),
-# which have historically stored whitespace-polluted labels such as "Admin\n". Those rows
-# matched no ROLE_PERMISSIONS key, so legitimate admins silently lost every permission.
+# which have historically stored whitespace-polluted labels such as "Admin\n". Those
+# rows matched no ROLE_PERMISSIONS key, so legitimate admins silently lost every
+# permission.
 # Resolving the stored label back to the canonical enum keeps exactly one role identity
 # per name instead of loosening authorization: "admin" can only ever resolve to ADMIN.
 _CANONICAL_ROLES: dict[str, RoleName] = {
     role.value.casefold(): role for role in RoleName
 }
 
+# Retired role labels. The platform is collapsing its six-tier admin hierarchy to
+# SUPER_ADMIN / GROUP_ADMIN / MEMBER. These labels are still accepted on input and
+# still resolve during the transition so a stale `roles` row or an old token cannot
+# lock an administrator out, but each one collapses onto a single surviving role
+# rather than keeping a tier alive:
+#
+# * ADMIN / FEDERATION_ADMIN were platform-wide administrators -> SUPER_ADMIN.
+# * REGIONAL_ADMIN was group-scoped, exactly like GROUP_ADMIN -> GROUP_ADMIN.
+#
+# This is deliberately a narrowing of what those labels can reach: FEDERATION_ADMIN
+# was already missing USER_MANAGE / ROLE_MANAGE, so a former ADMIN holder resolving
+# to SUPER_ADMIN is the only mapping that does not silently reduce an administrator's
+# reach over production data.
+RETIRED_ROLE_ALIASES: dict[str, RoleName] = {
+    "admin": RoleName.SUPER_ADMIN,
+    "federation_admin": RoleName.SUPER_ADMIN,
+    "regional_admin": RoleName.GROUP_ADMIN,
+}
+
+# The same mapping keyed by the uppercase label as stored in ``roles.name``, for
+# the bootstrap service and migrations that work on the raw column.
+LEGACY_ROLE_ALIASES: dict[str, RoleName] = {
+    label.upper(): role for label, role in RETIRED_ROLE_ALIASES.items()
+}
+
+_ROLE_LOOKUP: dict[str, RoleName] = {**_CANONICAL_ROLES, **RETIRED_ROLE_ALIASES}
+
 
 def resolve_role_name(raw: str | None) -> RoleName | None:
-    """Map a stored/incoming role label onto its canonical RoleName, or None if unknown."""
+    """Map a stored/incoming role label onto its canonical RoleName, or None if unknown.
+
+    Accepts whitespace-polluted and retired labels; see ``RETIRED_ROLE_ALIASES``.
+    """
     if raw is None:
         return None
-    return _CANONICAL_ROLES.get(str(raw).strip().casefold())
+    return _ROLE_LOOKUP.get(str(raw).strip().casefold())
+
+
+def is_canonical_role_label(raw: str | None) -> bool:
+    """True only for a label that is already one of the three surviving roles."""
+    if raw is None:
+        return False
+    return str(raw).strip().casefold() in _CANONICAL_ROLES
 
 
 class MemberStatus(str, Enum):

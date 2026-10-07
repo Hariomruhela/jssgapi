@@ -138,6 +138,56 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "son occupation profession",
         "son occupation",
     ),
+    # The form grew a second and third unmarried son/daughter; the first one
+    # keeps the short legacy field name, these keep their own.
+    "unmarried_son2_details": (
+        "unmarried son 2 details",
+        "unmarried son 2",
+        "son 2 details",
+        "son 2 name",
+    ),
+    "unmarried_son2_dob": (
+        "dob of unmarried son 2",
+        "unmarried son 2 dob",
+        "son 2 date of birth",
+        "son 2 dob",
+    ),
+    "unmarried_son2_education": (
+        "unmarried son 2 educational qualification",
+        "unmarried son 2 education",
+        "son 2 educational qualification",
+        "son 2 education",
+    ),
+    "unmarried_son2_occupation": (
+        "unmarried son 2 occupation profession",
+        "unmarried son 2 occupation",
+        "son 2 occupation profession",
+        "son 2 occupation",
+    ),
+    "unmarried_son3_details": (
+        "unmarried son 3 details",
+        "unmarried son 3",
+        "son 3 details",
+        "son 3 name",
+    ),
+    "unmarried_son3_dob": (
+        "dob of unmarried son 3",
+        "unmarried son 3 dob",
+        "son 3 date of birth",
+        "son 3 dob",
+    ),
+    "unmarried_son3_education": (
+        "unmarried son 3 educational qualification",
+        "unmarried son 3 education",
+        "son 3 educational qualification",
+        "son 3 education",
+    ),
+    "unmarried_son3_occupation": (
+        "unmarried son 3 occupation profession",
+        "unmarried son 3 occupation",
+        "son 3 occupation profession",
+        "son 3 occupation",
+    ),
     "daughter_name": (
         "unmarried daughter details",
         "unmarried daughter",
@@ -159,6 +209,59 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "unmarried daughter occupation",
         "daughter occupation profession",
         "daughter occupation",
+    ),
+    "unmarried_daughter2_details": (
+        "unmarried daughter 2 details",
+        "unmarried daughter 2",
+        "daughter 2 details",
+        "daughter 2 name",
+    ),
+    "unmarried_daughter2_dob": (
+        "dob of unmarried daughter 2",
+        "unmarried daughter 2 dob",
+        "daughter 2 date of birth",
+        "daughter 2 dob",
+    ),
+    "unmarried_daughter2_education": (
+        "unmarried daughter 2 educational qualification",
+        "unmarried daughter 2 education",
+        "daughter 2 educational qualification",
+        "daughter 2 education",
+    ),
+    "unmarried_daughter2_occupation": (
+        "unmarried daughter 2 occupation profession",
+        "unmarried daughter 2 occupation",
+        "daughter 2 occupation profession",
+        "daughter 2 occupation",
+    ),
+    "unmarried_daughter3_details": (
+        "unmarried daughter 3 details",
+        "unmarried daughter 3",
+        "daughter 3 details",
+        "daughter 3 name",
+    ),
+    "unmarried_daughter3_dob": (
+        "dob of unmarried daughter 3",
+        "unmarried daughter 3 dob",
+        "daughter 3 date of birth",
+        "daughter 3 dob",
+    ),
+    "unmarried_daughter3_education": (
+        "unmarried daughter 3 educational qualification",
+        "unmarried daughter 3 education",
+        "daughter 3 educational qualification",
+        "daughter 3 education",
+    ),
+    "unmarried_daughter3_occupation": (
+        "unmarried daughter 3 occupation profession",
+        "unmarried daughter 3 occupation",
+        "daughter 3 occupation profession",
+        "daughter 3 occupation",
+    ),
+    "business_address": (
+        "business address",
+        "office address",
+        "company address",
     ),
     "spouse_education": (
         "spouse educational qualification",
@@ -245,7 +348,17 @@ MONTH_FIRST_FORMATS = (
     *UNAMBIGUOUS_DATE_FORMATS,
 )
 DATE_FIELDS = frozenset(
-    {"member_dob", "spouse_dob", "son_dob", "daughter_dob", "anniversary_date"}
+    {
+        "member_dob",
+        "spouse_dob",
+        "son_dob",
+        "daughter_dob",
+        "anniversary_date",
+        "unmarried_son2_dob",
+        "unmarried_son3_dob",
+        "unmarried_daughter2_dob",
+        "unmarried_daughter3_dob",
+    }
 )
 AMBIGUOUS_DAY_MONTH = re.compile(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$")
 
@@ -695,7 +808,7 @@ class RegistrationSyncService:
                 continue
             limit = (
                 ADDRESS_MAX
-                if field_key in {"address", "member_photo_link"}
+                if field_key in {"address", "business_address", "member_photo_link"}
                 else TEXT_MAX
             )
             values[field_key] = truncate(raw, limit)

@@ -26,6 +26,11 @@ class UserOut(BaseModel):
     is_phone_verified: bool
     last_login_at: datetime | None = None
     role: RoleOut | None = None
+    # The group this account administers. Non-null for a GROUP_ADMIN and null
+    # otherwise, so a client can tell which group an admin is limited to without
+    # a second request. Present on the login response for the same reason.
+    group_id: UUID | None = None
+    group_name: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -47,7 +52,16 @@ class UserUpdate(BaseModel):
 
 
 class RoleChangeRequest(BaseModel):
+    """Request body for ``PATCH /users/{id}/role``.
+
+    ``group_id`` is required when assigning GROUP_ADMIN and ignored otherwise; a
+    role without a group clears any group the account previously held.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     role_name: str
+    group_id: UUID | None = None
 
 
 class LocalUserOut(UserOut):

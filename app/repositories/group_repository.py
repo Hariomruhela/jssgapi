@@ -9,9 +9,15 @@ from app.repositories.base_repository import BaseRepository
 class GroupRepository(BaseRepository[SocialGroup]):
     model = SocialGroup
 
-    async def search(self, query: str, limit: int = 50) -> list[SocialGroup]:
+    async def search(
+        self,
+        query: str,
+        group_id=None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[SocialGroup]:
         term = f"%{query}%"
-        result = await self.session.execute(
+        stmt = (
             select(SocialGroup)
             .where(
                 SocialGroup.is_deleted.is_(False),
@@ -19,7 +25,13 @@ class GroupRepository(BaseRepository[SocialGroup]):
             )
             .order_by(SocialGroup.name)
             .limit(limit)
+            .offset(offset)
         )
+        # Scope must narrow a search as well as a listing, otherwise searching by
+        # name leaks groups the caller is not allowed to see.
+        if group_id is not None:
+            stmt = stmt.where(SocialGroup.id == group_id)
+        result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
     async def get_by_name(self, name: str) -> SocialGroup | None:

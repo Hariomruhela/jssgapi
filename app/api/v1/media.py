@@ -6,10 +6,15 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
-from app.core.constants import RoleName
-from app.core.exceptions import ForbiddenException, NotFoundException
+from app.core.constants import RoleName, resolve_role_name
+from app.core.exceptions import (
+    BadRequestException,
+    ForbiddenException,
+    NotFoundException,
+)
 from app.core.permissions import Permission
-from app.core.responses import created, ok
+from app.core.responses import created, ok, paginated
+from app.core.scope import AccessScope, get_access_scope
 from app.dependencies import (
     CurrentUser,
     DBSession,
@@ -30,24 +35,88 @@ from app.services.media_service import MediaService
 
 router = APIRouter(prefix="/media", tags=["Media"])
 
+READ = Depends(require_permission(Permission.MEDIA_READ))
 UPLOAD = Depends(require_permission(Permission.MEDIA_UPLOAD))
 DELETE = Depends(require_permission(Permission.MEDIA_DELETE))
 MIGRATE = Depends(require_permission(Permission.MEDIA_MIGRATE))
 
 
-@router.get("")
+@router.get("", dependencies=[READ])
 async def list_media(
     db: DBSession,
-    owner_type: str = Query(...),
-    owner_id: UUID = Query(...),
+    current_user: CurrentUser,
+    owner_type: str | None = Query(default=None),
+    owner_id: UUID | None = Query(default=None),
+    group_id: UUID | None = Query(default=None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
+    """List media, either by owner or by group.
+
+    Exactly one of ``owner_type``/``owner_id`` or ``group_id`` selects the set.
+    A scoped admin is always filtered to its own group, and a request that mixes
+    an owner with a group is rejected rather than silently resolved to one of them.
+    """
+    if (owner_type is None) != (owner_id is None):
+        raise BadRequestException("owner_type and owner_id must be supplied together")
+    if owner_type is not None and group_id is not None:
+        raise BadRequestException("Supply either an owner or a group, not both")
+    if owner_type is None and group_id is None:
+        raise BadRequestException("Supply either owner_type/owner_id or group_id")
+
+    scope = await get_access_scope(db, current_user)
+    if group_id is not None and not scope.unrestricted and group_id != scope.group_id:
+        raise ForbiddenException("Operation is limited to your own group")
+
     repo = MediaRepository(db)
-    items = await repo.list_for_owner(
-        owner_type, owner_id, limit=page_size, offset=(page - 1) * page_size
+    if owner_type is not None:
+        # Owner-based access is about the owner, not the group: a member's own
+        # photos stay reachable by that member. A scoped admin may only browse the
+        # media of an owner that belongs to its own group.
+        if not scope.unrestricted:
+            await assert_owner_in_scope(db, scope, owner_type, owner_id)
+        items = await repo.list_for_owner(
+            owner_type, owner_id, limit=page_size, offset=(page - 1) * page_size
+        )
+        total = await repo.count_for_owner(owner_type, owner_id)
+    else:
+        effective_group = None if scope.unrestricted else scope.group_id
+        items = await repo.list_for_group(
+            effective_group, limit=page_size, offset=(page - 1) * page_size
+        )
+        total = await repo.count_for_group(effective_group)
+    return paginated(
+        "Media fetched successfully",
+        [MediaOut.model_validate(m) for m in items],
+        {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": (total + page_size - 1) // page_size,
+        },
     )
-    return ok("Media fetched successfully", [MediaOut.model_validate(m) for m in items])
+
+
+async def assert_owner_in_scope(
+    db: DBSession, scope: AccessScope, owner_type: str, owner_id: UUID | None
+) -> None:
+    """Refuse owner-based media browsing outside the caller's group.
+
+    Only the two owner types the platform actually creates are recognised; an
+    unrecognised ``owner_type`` is refused rather than allowed through, since a
+    scoped admin would otherwise be browsing an unenforced dimension.
+    """
+    if owner_type == "member":
+        owner_group_id = await db.scalar(
+            select(Member.group_id).where(Member.id == owner_id)
+        )
+    elif owner_type == "group":
+        owner_group_id = owner_id if owner_id is not None else None
+    else:
+        raise ForbiddenException("This media owner type is not accessible")
+
+    if scope.group_id is None or owner_group_id != scope.group_id:
+        raise ForbiddenException("Operation is limited to your own group")
 
 
 @router.post("/upload", dependencies=[UPLOAD])
@@ -59,11 +128,20 @@ async def upload_media(
     owner_type: str = Form(...),
     owner_id: UUID = Form(...),
     is_public: bool = Form(default=True),
+    group_id: UUID | None = Form(default=None),
 ):
     content = await file.read()
     service = MediaService(db)
     ip = request.client.host if request.client else None
     ua = request.headers.get("user-agent")
+
+    # A scoped admin can only file into its own group, and the group is derived from
+    # the owner rather than trusted from the form field.
+    scope = await get_access_scope(db, current_user)
+    effective_group = group_id
+    if not scope.unrestricted:
+        await assert_owner_in_scope(db, scope, owner_type, owner_id)
+        effective_group = await scope_group_from_owner(db, owner_type, owner_id)
     media = await service.upload(
         owner_type=owner_type,
         owner_id=owner_id,
@@ -71,12 +149,24 @@ async def upload_media(
         content=content,
         mime_type=file.content_type or "application/octet-stream",
         is_public=is_public,
+        group_id=effective_group,
         uploaded_by=current_user.id,
         ip_address=ip,
         user_agent=ua,
         base_url=str(request.base_url),
     )
     return created("Media uploaded successfully", MediaOut.model_validate(media))
+
+
+async def scope_group_from_owner(
+    db: DBSession, owner_type: str, owner_id: UUID
+) -> UUID | None:
+    """The group an owner belongs to, for stamping a group-admin upload."""
+    if owner_type == "group":
+        return owner_id
+    if owner_type == "member":
+        return await db.scalar(select(Member.group_id).where(Member.id == owner_id))
+    return None
 
 
 @router.post("/migrate-drive-photos", dependencies=[MIGRATE])
@@ -165,8 +255,14 @@ async def _can_access_private(db: DBSession, media: Media, user: User | None) ->
     if media.uploaded_by is not None and str(media.uploaded_by) == str(user.id):
         return True
     role = getattr(user, "role", None)
-    if role is not None and role.name != RoleName.MEMBER.value:
+    resolved = resolve_role_name(role.name) if role is not None else None
+    if resolved is RoleName.SUPER_ADMIN:
         return True
+    if resolved is RoleName.GROUP_ADMIN:
+        # A Group Admin only reaches private media inside its own group. The
+        # blanket "any admin" rule below would let it read another group's files.
+        scope = await get_access_scope(db, user)
+        return scope.group_id is not None and media.group_id == scope.group_id
     if media.owner_type == "member":
         member_user_id = await db.scalar(
             select(Member.user_id).where(Member.id == media.owner_id)
@@ -193,6 +289,10 @@ async def delete_media(
     repo = MediaRepository(db)
     media = await repo.get_by_id(media_id)
     if media is None:
+        raise NotFoundException("Media", str(media_id))
+    scope = await get_access_scope(db, current_user)
+    if not scope.unrestricted and media.group_id != scope.group_id:
+        # Reported as missing so a cross-group id is not confirmed to exist.
         raise NotFoundException("Media", str(media_id))
     ip = request.client.host if request.client else None
     ua = request.headers.get("user-agent")

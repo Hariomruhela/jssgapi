@@ -12,6 +12,7 @@ from app.models.base import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKe
 
 if TYPE_CHECKING:
     from app.models.group import SocialGroup
+    from app.models.member import Member
 
 
 class Trustee(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
@@ -24,6 +25,16 @@ class Trustee(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
         UUID(as_uuid=True),
         ForeignKey("social_groups.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+    # The community member this trustee seat belongs to. Set when a Super Admin
+    # promotes an existing member to the board, so the trustee record and the
+    # member profile stay linked. ON DELETE SET NULL: retiring a member must not
+    # delete the board record.
+    member_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("members.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     first_name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -43,6 +54,7 @@ class Trustee(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     sort_order: Mapped[int] = mapped_column(default=0, nullable=False)
 
     group: Mapped[SocialGroup] = relationship(back_populates="trustees")
+    member: Mapped[Member | None] = relationship(lazy="selectin")
 
     def __repr__(self) -> str:
         return f"<Trustee {self.first_name} {self.last_name} - {self.designation}>"

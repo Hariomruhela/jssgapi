@@ -11,12 +11,22 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
+    from app.models.group import SocialGroup
     from app.models.user import User
 
 
 class News(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "news"
 
+    # The social group this item belongs to. NULL means platform-wide news; a
+    # GROUP_ADMIN never sees NULL rows, because it has no group of its own to
+    # match them against.
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("social_groups.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     title_hi: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -37,6 +47,11 @@ class News(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     )
 
     author: Mapped[User | None] = relationship(lazy="selectin")
+    group: Mapped[SocialGroup | None] = relationship(lazy="selectin")
+
+    @property
+    def group_name(self) -> str | None:
+        return self.group.name if self.group is not None else None
 
     def __repr__(self) -> str:
         return f"<News {self.title}>"

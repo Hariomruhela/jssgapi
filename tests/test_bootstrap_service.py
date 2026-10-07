@@ -5,7 +5,7 @@ import pytest_asyncio
 from sqlalchemy import func, select
 
 from app.core.constants import RoleName
-from app.core.permissions import ROLE_PERMISSIONS
+from app.core.permissions import ROLE_PERMISSIONS, Permission
 from app.database import async_session_factory, engine
 from app.models.user import Permission as PermissionModel
 from app.models.user import RolePermission
@@ -32,8 +32,15 @@ async def test_seeded_permissions_match_the_permission_enum():
         models = await _seed_permissions(session)
         await session.commit()
 
+    declared = {
+        value
+        for name, value in vars(Permission).items()
+        if not name.startswith("_") and isinstance(value, str)
+    }
     assert set(models) == set(_collect_permissions())
-    assert len(models) == 43
+    # Derived rather than hard coded: adding a permission is a code change and a
+    # stale count here would only ever fail for the wrong reason.
+    assert len(models) == len(declared)
 
     async with async_session_factory() as session:
         count = await session.scalar(select(func.count()).select_from(PermissionModel))

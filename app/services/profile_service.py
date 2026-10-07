@@ -37,17 +37,56 @@ PROFILE_FIELDS = (
     "daughter_dob",
     "daughter_education",
     "daughter_occupation",
+    "unmarried_son1_details",
+    "unmarried_son1_dob",
+    "unmarried_son1_education",
+    "unmarried_son1_occupation",
+    "unmarried_son2_details",
+    "unmarried_son2_dob",
+    "unmarried_son2_education",
+    "unmarried_son2_occupation",
+    "unmarried_son3_details",
+    "unmarried_son3_dob",
+    "unmarried_son3_education",
+    "unmarried_son3_occupation",
+    "unmarried_daughter1_details",
+    "unmarried_daughter1_dob",
+    "unmarried_daughter1_education",
+    "unmarried_daughter1_occupation",
+    "unmarried_daughter2_details",
+    "unmarried_daughter2_dob",
+    "unmarried_daughter2_education",
+    "unmarried_daughter2_occupation",
+    "unmarried_daughter3_details",
+    "unmarried_daughter3_dob",
+    "unmarried_daughter3_education",
+    "unmarried_daughter3_occupation",
     "member_education",
     "member_occupation",
     "company_name",
     "group_designation",
     "social_group_name",
     "interest_fields",
+    "business_address",
     "address",
     "city",
     "area",
     "phone_number",
     "email",
+)
+
+#: The first unmarried son/daughter is also kept under the shorter legacy names
+#: the family records and older clients use, so both spellings of the same slot
+#: always hold the same values.
+PROFILE_FIELD_PAIRS: tuple[tuple[str, str], ...] = (
+    ("unmarried_son1_details", "son_name"),
+    ("unmarried_son1_dob", "son_dob"),
+    ("unmarried_son1_education", "son_education"),
+    ("unmarried_son1_occupation", "son_occupation"),
+    ("unmarried_daughter1_details", "daughter_name"),
+    ("unmarried_daughter1_dob", "daughter_dob"),
+    ("unmarried_daughter1_education", "daughter_education"),
+    ("unmarried_daughter1_occupation", "daughter_occupation"),
 )
 
 
@@ -57,6 +96,22 @@ def _as_string(value: Any) -> str | None:
     if isinstance(value, datetime | date):
         return value.isoformat()
     return str(value)
+
+
+def _normalize_values(values: dict[str, Any]) -> dict[str, str | None]:
+    """Store profile values as strings, with both names of a shared slot set.
+
+    ``profile_data`` is read back as strings by the profile view, so an int
+    count or a date object must be converted before it is written. The son 1 /
+    daughter 1 pairs are mirrored here so a write through either spelling keeps
+    the two in step - the family records read the legacy spelling.
+    """
+    normalized = {key: _as_string(value) for key, value in values.items()}
+    for canonical, legacy in PROFILE_FIELD_PAIRS:
+        for source, target in ((canonical, legacy), (legacy, canonical)):
+            if source in normalized and target not in normalized:
+                normalized[target] = normalized[source]
+    return normalized
 
 
 def _parse_date(value: str | None) -> date | None:
@@ -129,6 +184,7 @@ class ProfileService:
         built profile back.
         """
         profile_data = dict(member.profile_data or {})
+        values = _normalize_values(values)
         profile_data.update(values)
         member.profile_data = profile_data
         self._apply_member_fields(member, values)
@@ -179,9 +235,20 @@ class ProfileService:
 
     def _build_profile(self, member: Member) -> ProfileOut:
         values = self._fallback_values(member)
-        for field, value in (member.profile_data or {}).items():
+        profile_data = member.profile_data or {}
+        for field, value in profile_data.items():
             if field in PROFILE_FIELDS:
                 values[field] = _as_string(value)
+        # Son/daughter slot 1 has two spellings of the same four values. Whichever
+        # spelling was actually stored wins over a value derived from a family
+        # record, so one member never reads back two different names.
+        for canonical, legacy in PROFILE_FIELD_PAIRS:
+            for source in (canonical, legacy):
+                stored = _as_string(profile_data.get(source))
+                if stored is not None:
+                    values[canonical] = stored
+                    values[legacy] = stored
+                    break
         return ProfileOut(**values)
 
     def _fallback_values(self, member: Member) -> dict[str, str | None]:

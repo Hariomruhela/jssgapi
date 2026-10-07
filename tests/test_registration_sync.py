@@ -110,7 +110,9 @@ def client():
 def admin_token() -> str:
     engine = create_engine(_psycopg_url(), poolclass=NullPool)
     with Session(engine) as session:
-        role = session.execute(select(Role).where(Role.name == "ADMIN")).scalar_one()
+        role = session.execute(
+            select(Role).where(Role.name == "SUPER_ADMIN")
+        ).scalar_one()
         user = User(
             phone_number=_fresh_phone(),
             password_hash=hash_password(PASSWORD),

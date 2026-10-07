@@ -18,6 +18,9 @@ class NewsCreate(BaseModel):
     status: NewsStatus = NewsStatus.DRAFT
     scheduled_at: datetime | None = None
     is_featured: bool = False
+    # The owning group. A GROUP_ADMIN's value is forced to its own group by the
+    # endpoint; NULL means platform-wide news, which only a SUPER_ADMIN can create.
+    group_id: UUID | None = None
 
 
 class NewsUpdate(BaseModel):
@@ -29,6 +32,7 @@ class NewsUpdate(BaseModel):
     status: NewsStatus | None = None
     scheduled_at: datetime | None = None
     is_featured: bool | None = None
+    group_id: UUID | None = None
 
 
 class NewsPublishRequest(BaseModel):
@@ -45,6 +49,8 @@ class NewsOut(BaseModel):
     content: str | None = None
     cover_image_url: str | None = None
     status: str
+    group_id: UUID | None = None
+    group_name: str | None = None
     published_at: datetime | None = None
     scheduled_at: datetime | None = None
     is_featured: bool

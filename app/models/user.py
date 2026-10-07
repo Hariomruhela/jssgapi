@@ -13,6 +13,7 @@ from app.core.constants import RoleName
 from app.models.base import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
+    from app.models.group import SocialGroup
     from app.models.member import Member
 
 
@@ -31,7 +32,9 @@ class Role(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         # Always store the canonical enum value: an imported/polluted label such as
         # "Admin\n" would otherwise create a second role row that matches no
         # ROLE_PERMISSIONS key and silently denies access.
-        canonical = name.value if isinstance(name, RoleName) else str(name).strip().upper()
+        canonical = (
+            name.value if isinstance(name, RoleName) else str(name).strip().upper()
+        )
         result = await session.execute(select(cls).where(cls.name == canonical))
         role = result.scalar_one_or_none()
         if role is None:
@@ -102,12 +105,27 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     role_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("roles.id", ondelete="SET NULL"), nullable=True
     )
+    # The group this user administers. Only meaningful for GROUP_ADMIN, where it is
+    # the single source of truth for every group-scoped authorization check in
+    # `app/core/scope.py`. SET NULL: removing a group must not delete the login.
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("social_groups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     role: Mapped[Role | None] = relationship(back_populates="users", lazy="joined")
-    refresh_tokens: Mapped[list[RefreshToken]] = relationship(
+    group: Mapped[SocialGroup | None] = relationship(lazy="joined")
+    refresh_tokens: Mapped[RefreshToken] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
     member: Mapped[Member | None] = relationship(back_populates="user")
+
+    @property
+    def group_name(self) -> str | None:
+        """Group name for serialization; ``group`` is eager-loaded, so no lazy IO."""
+        return self.group.name if self.group is not None else None
 
 
 class RefreshToken(Base, UUIDPrimaryKeyMixin):

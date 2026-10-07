@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from app.models.location import Location
     from app.models.member import Member
     from app.models.trustee import Trustee
+    from app.models.user import User
 
 
 class SocialGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
@@ -36,6 +37,9 @@ class SocialGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     location: Mapped[Location | None] = relationship(back_populates="groups")
     members: Mapped[list[Member]] = relationship(back_populates="group")
     trustees: Mapped[list[Trustee]] = relationship(back_populates="group")
+    # Login accounts assigned to administer this group. Only GROUP_ADMIN users
+    # belong here; `User.group_id` points back at this row.
+    admins: Mapped[list[User]] = relationship(back_populates="group", lazy="selectin")
 
     def __repr__(self) -> str:
         return f"<SocialGroup {self.name}>"

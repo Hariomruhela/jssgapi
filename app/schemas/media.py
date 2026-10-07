@@ -12,6 +12,9 @@ class MediaOut(BaseModel):
     id: UUID
     owner_type: str
     owner_id: UUID
+    # NULL for a personal file (a member profile photo) that is reached through
+    # its owner rather than the group gallery.
+    group_id: UUID | None = None
     file_name: str
     file_type: str
     mime_type: str

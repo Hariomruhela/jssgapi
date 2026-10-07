@@ -64,10 +64,12 @@ class MediaService:
         width: int | None = None,
         height: int | None = None,
         is_public: bool = True,
+        group_id: uuid.UUID | None = None,
         uploaded_by: uuid.UUID | None = None,
         ip_address: str | None = None,
         user_agent: str | None = None,
         base_url: str | None = None,
+        object_key: str | None = None,
     ) -> Media:
         category = validate_mime_type(mime_type)
         validate_extension(file_name, category)
@@ -81,7 +83,11 @@ class MediaService:
             "document": MediaType.DOCUMENT.value,
         }[category]
 
-        object_key = build_object_key(category, file_name, owner_id)
+        # A caller may pin the key (member photos keep one predictable path per
+        # member and role); otherwise the key is generated as before. The key is
+        # still validated by the storage backend, so a pinned key cannot escape
+        # the bucket root.
+        object_key = object_key or build_object_key(category, file_name, owner_id)
         # Raises rather than silently dropping the bytes, so a failed upload can
         # never be reported as a success with an unusable URL.
         storage_url = self.storage.upload_bytes(object_key, content, mime_type)
@@ -89,6 +95,7 @@ class MediaService:
         media = await self.repo.create(
             owner_type=owner_type,
             owner_id=owner_id,
+            group_id=group_id,
             file_name=file_name,
             file_type=file_type,
             mime_type=mime_type,
