@@ -187,6 +187,12 @@ class Settings(BaseSettings):
     google_sheets_service_account_json: str = ""
     google_sheets_sync_enabled: bool = False
 
+    # Vercel Cron. Vercel sends ``Authorization: Bearer ${CRON_SECRET}`` on every
+    # invocation of the scheduled endpoint; an empty value disables it (the
+    # scheduled route then refuses every request). Set it only in Vercel's
+    # environment variables - never in the repository or in frontend code.
+    cron_secret: str = ""
+
     # Payment
     payment_provider: str = ""
     payment_key: str = ""

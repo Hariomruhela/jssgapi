@@ -7,12 +7,12 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.constants import MemberStatus, RoleName
-from app.core.exceptions import BadRequestException
+from app.core.exceptions import BadRequestException, ConflictException
 from app.core.security import hash_password
 from app.models.member import Member
 from app.models.user import Role, User
@@ -25,11 +25,17 @@ from app.schemas.registration import (
 from app.services.audit_service import AuditService
 from app.services.google_sheets_service import GoogleSheetsService, SheetTable
 from app.services.profile_service import PROFILE_FIELDS, ProfileService
+from app.services.sheet_columns import SheetColumn, plan_sheet_columns
 from app.utils.validators import normalize_phone_number, validate_email
 
 logger = logging.getLogger(__name__)
 
 SYNC_AUDIT_ACTION = "REGISTRATION_SYNC"
+
+# Transaction-scoped advisory lock key: one sheet sync writes at a time, so two
+# cron ticks (or a cron tick and a manual sync) cannot interleave. The lock is
+# released when the request's transaction commits or rolls back.
+SYNC_LOCK_KEY = 8_412_773_001
 
 # Rows / issues echoed back to the caller; the counters are always complete.
 PREVIEW_LIMIT = 200
@@ -462,6 +468,10 @@ class ParsedRow:
     dates: dict[str, date] = field(default_factory=dict)
     errors: list[RowIssue] = field(default_factory=list)
     warnings: list[RowIssue] = field(default_factory=list)
+    # Sheet columns the registration mapping does not know about, as
+    # ``members`` column -> raw sheet value. Written by the sync, never into
+    # ``profile_data`` (that bag holds only known profile fields).
+    extra: dict[str, str] = field(default_factory=dict)
 
     @property
     def valid(self) -> bool:
@@ -482,6 +492,11 @@ class RegistrationSyncService:
         self.sheets = GoogleSheetsService()
         self.profiles = ProfileService(session)
         self.column_index = build_column_index()
+        # Filled by run(): sheet header -> column for headers the registration
+        # mapping does not know (see app/services/sheet_columns.py), and the
+        # same columns keyed by their SQL name for the writers.
+        self.extra_targets: dict[str, SheetColumn] = {}
+        self.extra_columns: dict[str, SheetColumn] = {}
         # dd/mm by default; _detect_day_first() overrides it from the sheet data.
         self.day_first = True
 
@@ -573,33 +588,45 @@ class RegistrationSyncService:
         columns: list[str],
     ) -> ParsedRow:
         values: dict[str, str] = {}
+        extras: dict[str, str] = {}
         row_warnings: list[tuple[str, str]] = []
         for position, cell in enumerate(cells):
             if position >= len(columns):
                 break
-            field_key = match_field(self.column_index, columns[position])
-            if field_key is None or not cell.strip():
+            header = columns[position]
+            field_key = match_field(self.column_index, header)
+            cell_text = cell.strip()
+            if not cell_text:
+                continue
+            if field_key is None:
+                # A column the registration mapping does not know: it was
+                # planned onto a (possibly just created) members column.
+                target = self.extra_targets.get(header)
+                if target is None or is_placeholder(cell_text):
+                    continue
+                if target.name in extras:
+                    continue  # duplicate header: first non-empty cell wins
+                extras[target.name] = cell_text
                 continue
             # A form can repeat a header (the trial sheet has two identical
             # "Profile Photo Spouse" columns); keep the first non-empty cell.
             if field_key in values:
                 continue
-            text = cell.strip()
-            if is_placeholder(text):
+            if is_placeholder(cell_text):
                 # Dropped outright: "NA"/"Nil" would otherwise become a
                 # family_members row with that name, and the field is left
                 # null so the API can tell "not filled in" from a real value.
-                row_warnings.append((field_key, text))
+                row_warnings.append((field_key, cell_text))
                 continue
-            values[field_key] = text
+            values[field_key] = cell_text
 
-        row = ParsedRow(row_number=row_number, values=values)
-        for field_key, text in row_warnings:
+        row = ParsedRow(row_number=row_number, values=values, extra=extras)
+        for field_key, placeholder in row_warnings:
             row.warnings.append(
                 RowIssue(
                     row=row_number,
                     column=field_key,
-                    message=f"placeholder {text!r} ignored",
+                    message=f"placeholder {placeholder!r} ignored",
                 )
             )
 
@@ -759,16 +786,22 @@ class RegistrationSyncService:
                     emails_owner[email.lower()] = phone_key(phone)
         return users_by_phone, emails_owner
 
-    async def _member_user_ids(self, users: list[User]) -> set[Any]:
+    async def _members_by_user(self, users: list[User]) -> dict[Any, Member]:
+        """user_id -> existing member row (the upsert target).
+
+        A sheet row whose mobile number already belongs to a user with a
+        member record is **updated** in place; only a genuinely new member is
+        inserted. Matching stays keyed on ``users.phone_number``.
+        """
         user_ids = [user.id for user in users]
         if not user_ids:
-            return set()
+            return {}
         result = await self.session.execute(
-            select(Member.user_id).where(
+            select(Member).where(
                 Member.user_id.in_(user_ids), Member.is_deleted.is_(False)
             )
         )
-        return set(result.scalars().all())
+        return {member.user_id: member for member in result.scalars().all()}
 
     # ------------------------------------------------------------------
     # payload building
@@ -871,6 +904,45 @@ class RegistrationSyncService:
                 + ", ".join(headers)
             )
 
+        # One writer at a time: a scheduled tick and a manual sync must not
+        # interleave, or the same sheet row could be written twice. The lock is
+        # transaction scoped, so it is released when this request commits or
+        # rolls back - no timers, no cleanup, works on Vercel's short-lived
+        # functions.
+        if not options.dry_run:
+            locked = (
+                await self.session.execute(
+                    text("SELECT pg_try_advisory_xact_lock(:key)"),
+                    {"key": SYNC_LOCK_KEY},
+                )
+            ).scalar_one()
+            if not locked:
+                raise ConflictException(
+                    "Another Google Sheet sync is already running. "
+                    "Try again in a minute."
+                )
+
+        # Headers the registration mapping does not know are planned onto
+        # members columns (created if missing) instead of being dropped. A dry
+        # run only reports what would be created.
+        self.extra_targets, new_columns = await plan_sheet_columns(
+            self.session, headers, keys, apply=not options.dry_run
+        )
+        self.extra_columns = {
+            column.name: column for column in self.extra_targets.values()
+        }
+        logger.info(
+            "GOOGLE SHEET SYNC STARTED | spreadsheet=%s sheet=%s header_row=%s "
+            "data_start_row=%s rows=%s mode=%s new_columns=%s",
+            table.spreadsheet_id,
+            table.sheet_name,
+            header_row,
+            data_start_row,
+            len(table.rows),
+            "dry-run" if options.dry_run else "write",
+            new_columns,
+        )
+
         for _number, cells in table.rows:
             self._detect_day_first(cells, headers)
 
@@ -878,7 +950,7 @@ class RegistrationSyncService:
         valid_rows = [row for row in rows if row.valid]
 
         users_by_phone, emails_owner = await self._existing_users(valid_rows)
-        member_user_ids = await self._member_user_ids(list(users_by_phone.values()))
+        members_by_user = await self._members_by_user(list(users_by_phone.values()))
 
         member_role_id: Any = None
         if not options.dry_run:
@@ -889,7 +961,7 @@ class RegistrationSyncService:
         results: list[RowResult] = []
         errors: list[RowIssue] = []
         warnings: list[RowIssue] = []
-        inserted = linked = skipped = failed = 0
+        inserted = linked = updated = skipped = failed = 0
         seen_phones: dict[str, int] = {}
 
         for row in rows:
@@ -950,17 +1022,44 @@ class RegistrationSyncService:
                 continue
 
             user = users_by_phone.get(key)
-            if user is not None and user.id in member_user_ids:
-                skipped += 1
+            existing_member = (
+                members_by_user.get(user.id) if user is not None else None
+            )
+
+            if existing_member is not None:
+                # Already imported: merge this row into the member instead of
+                # skipping it (and never a second row for one mobile number).
+                if options.dry_run:
+                    updated += 1
+                    results.append(
+                        RowResult(
+                            row=row.row_number,
+                            action="update",
+                            name=row.full_name,
+                            phone=row.masked_phone(),
+                            reason=(
+                                "member exists; non-empty sheet values would be "
+                                "merged into it"
+                            ),
+                        )
+                    )
+                    continue
+                try:
+                    async with self.session.begin_nested():
+                        await self._update_row(
+                            row, existing_member, current_user_id
+                        )
+                    updated += 1
+                except Exception as exc:  # noqa: BLE001 - keep going per row
+                    failed += 1
+                    results.append(self._row_failure(row, exc, errors))
+                    continue
                 results.append(
                     RowResult(
                         row=row.row_number,
-                        action="skipped",
+                        action="update",
                         name=row.full_name,
                         phone=row.masked_phone(),
-                        reason=(
-                            "already imported " "(member exists for this mobile number)"
-                        ),
                     )
                 )
                 continue
@@ -992,36 +1091,15 @@ class RegistrationSyncService:
                     member = await self._insert_row(
                         row, user, member_role_id, current_user_id
                     )
-                member_user_ids.add(member.user_id)
+                members_by_user[member.user_id] = member
                 if user is None:
                     users_by_phone[key] = member.user
                     inserted += 1
                 else:
                     linked += 1
             except Exception as exc:  # noqa: BLE001 - one bad row must not abort the batch
-                logger.exception(
-                    "registration sync failed on sheet row %s", row.row_number
-                )
-                # begin_nested() rolls the row back, but the objects stay in the
-                # session's identity map; drop them so a later commit cannot
-                # re-insert a member whose profile was never written.
-                self.session.expunge_all()
                 failed += 1
-                issue = RowIssue(
-                    row=row.row_number,
-                    column=None,
-                    message=f"{type(exc).__name__}: {exc}",
-                )
-                errors.append(issue)
-                results.append(
-                    RowResult(
-                        row=row.row_number,
-                        action="failed",
-                        name=row.full_name,
-                        phone=row.masked_phone(),
-                        reason=issue.message,
-                    )
-                )
+                results.append(self._row_failure(row, exc, errors))
                 continue
             results.append(
                 RowResult(
@@ -1032,7 +1110,9 @@ class RegistrationSyncService:
                 )
             )
 
-        # A dry run must not touch PostgreSQL at all, so no audit row either.
+        # A dry run writes nothing to PostgreSQL (it only reads
+        # information_schema to report the columns it would add), so no audit
+        # row either.
         if not options.dry_run:
             await AuditService(self.session).log(
                 SYNC_AUDIT_ACTION,
@@ -1045,8 +1125,10 @@ class RegistrationSyncService:
                     "total_rows": len(rows),
                     "inserted": inserted,
                     "linked_existing_user": linked,
+                    "updated": updated,
                     "skipped_duplicate": skipped,
                     "failed": failed,
+                    "new_columns": new_columns,
                 },
             )
 
@@ -1054,14 +1136,42 @@ class RegistrationSyncService:
             message = (
                 f"Dry run complete: {len(rows)} rows read, {inserted} would be "
                 f"inserted, {linked} would be linked to an existing user, "
-                f"{skipped} skipped, {failed} failed. Nothing was written."
+                f"{updated} would be updated, {skipped} skipped, {failed} failed"
+                + (
+                    f", {len(new_columns)} new column(s) would be created: "
+                    + ", ".join(new_columns)
+                    if new_columns
+                    else ""
+                )
+                + ". Nothing was written."
             )
         else:
             message = (
                 f"Sync complete: {len(rows)} rows read, {inserted} inserted, "
-                f"{linked} linked to an existing user, {skipped} skipped, "
-                f"{failed} failed"
+                f"{linked} linked to an existing user, {updated} updated, "
+                f"{skipped} skipped, {failed} failed"
+                + (
+                    f", {len(new_columns)} new column(s) created: "
+                    + ", ".join(new_columns)
+                    if new_columns
+                    else ""
+                )
             )
+        logger.info(
+            "GOOGLE SHEET SYNC COMPLETED | spreadsheet=%s sheet=%s mode=%s "
+            "rows=%s inserted=%s linked=%s updated=%s skipped=%s failed=%s "
+            "new_columns=%s",
+            table.spreadsheet_id,
+            table.sheet_name,
+            "dry-run" if options.dry_run else "write",
+            len(rows),
+            inserted,
+            linked,
+            updated,
+            skipped,
+            failed,
+            new_columns,
+        )
         return SyncGoogleSheetResponse(
             dry_run=options.dry_run,
             spreadsheet_id=table.spreadsheet_id,
@@ -1071,8 +1181,10 @@ class RegistrationSyncService:
             total_rows=len(rows),
             inserted=inserted,
             linked_existing_user=linked,
+            updated=updated,
             skipped_duplicate=skipped,
             failed=failed,
+            new_columns=new_columns,
             columns=headers,
             unmapped_columns=unmapped,
             missing_columns=missing,
@@ -1085,6 +1197,80 @@ class RegistrationSyncService:
     # ------------------------------------------------------------------
     # writing (only reached when dry_run is false and the kill switch is on)
     # ------------------------------------------------------------------
+    def _row_failure(
+        self, row: ParsedRow, exc: Exception, errors: list[RowIssue]
+    ) -> RowResult:
+        """Roll one row back and describe why it failed (never aborts the run)."""
+        logger.exception("registration sync failed on sheet row %s", row.row_number)
+        # begin_nested() rolls the row back, but the objects stay in the
+        # session's identity map; drop them so a later commit cannot re-insert
+        # a member whose profile was never written.
+        self.session.expunge_all()
+        issue = RowIssue(
+            row=row.row_number,
+            column=None,
+            message=f"{type(exc).__name__}: {exc}",
+        )
+        errors.append(issue)
+        return RowResult(
+            row=row.row_number,
+            action="failed",
+            name=row.full_name,
+            phone=row.masked_phone(),
+            reason=issue.message,
+        )
+
+    async def _apply_extra_columns(self, member_id: Any, extra: dict[str, str]) -> None:
+        """Write values of columns the registration mapping does not know.
+
+        ``extra`` is ``members column -> sheet cell``; the cell is truncated
+        here to the column's declared length so an existing VARCHAR(n) cannot
+        reject it.
+        """
+        for column, raw in extra.items():
+            target = self.extra_columns.get(column)
+            if target is None:
+                continue
+            await self.session.execute(
+                text(f'UPDATE members SET "{column}" = :value WHERE id = :id'),
+                {"value": target.fit(raw), "id": member_id},
+            )
+
+    async def _update_row(
+        self, row: ParsedRow, member: Member, current_user_id: Any
+    ) -> None:
+        """Merge one sheet row into an already imported member.
+
+        Only non-empty sheet cells are written: a blank cell means "leave the
+        stored value alone", never "clear it". Identity is never touched - the
+        match was made on ``users.phone_number``.
+        """
+        await self.profiles.apply_values(member, self._profile_values(row))
+
+        assignments = {
+            column: value
+            for column, value in self._member_columns(row).items()
+            if value
+        }
+        if assignments:
+            assignments["updated_by"] = current_user_id
+            assignments["id"] = member.id
+            assignments_sql = ", ".join(
+                f'"{column}" = :{column}'
+                for column in assignments
+                if column != "id"
+            )
+            await self.session.execute(
+                text(f"UPDATE members SET {assignments_sql} WHERE id = :id"),
+                assignments,
+            )
+        await self._apply_extra_columns(member.id, row.extra)
+        logger.info(
+            "registration sync updated member %s from sheet row %s",
+            member.id,
+            row.row_number,
+        )
+
     async def _insert_row(
         self,
         row: ParsedRow,
@@ -1135,6 +1321,7 @@ class RegistrationSyncService:
         await self.session.flush()
 
         await self.profiles.apply_values(member, self._profile_values(row))
+        await self._apply_extra_columns(member.id, row.extra)
         logger.info(
             "registration sync inserted member %s for sheet row %s",
             member.id,

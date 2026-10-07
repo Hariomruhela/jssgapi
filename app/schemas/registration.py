@@ -49,8 +49,13 @@ class SyncGoogleSheetResponse(BaseModel):
     total_rows: int
     inserted: int = 0
     linked_existing_user: int = 0
+    # Rows whose sheet values were merged into an existing member.
+    updated: int = 0
     skipped_duplicate: int = 0
     failed: int = 0
+    # members columns created (or, on a dry run, that would be created) for
+    # headers the registration mapping does not know.
+    new_columns: list[str] = []
     columns: list[str] = []
     unmapped_columns: list[str] = []
     missing_columns: list[str] = []

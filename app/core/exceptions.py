@@ -85,6 +85,17 @@ class BadRequestException(AppException):
         )
 
 
+class ConflictException(AppException):
+    """Another request is already doing this work (e.g. a concurrent sync)."""
+
+    def __init__(self, detail: str, error_code: str = "CONFLICT"):
+        super().__init__(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=detail,
+            error_code=error_code,
+        )
+
+
 class ValidationException(AppException):
     def __init__(self, detail: str):
         super().__init__(
