@@ -21,17 +21,12 @@ from app.services.profile_service import PROFILE_FIELDS
 from app.services.registration_sync_service import RegistrationSyncService
 from app.services.sheet_columns import normalize_column_name
 from tests.test_registration_sync import (
-    ENDPOINT,
     HEADERS,
     PASSWORD,
     SHEET_ID,
     _call,
     _fresh_phone,
 )
-
-# The scheduled route is the same path, different method.
-CRON_ENDPOINT = ENDPOINT
-_SECRET = "test-cron-secret-value"
 
 # HEADERS positions used below.
 _FULL_NAME = 1
@@ -72,7 +67,7 @@ def admin_token() -> str:
         user = User(
             phone_number=_fresh_phone(),
             password_hash=hash_password(PASSWORD),
-            full_name="Sheet Cron Admin",
+            full_name="Sheet Sync Admin",
             is_email_verified=True,
             is_phone_verified=True,
             role_id=role.id,
@@ -123,35 +118,6 @@ def _sheet(
         columns=tuple((chr(ord("A") + i), header) for i, header in enumerate(headers)),
         rows=tuple((index + 2, row) for index, row in enumerate(rows)),
     )
-
-
-def _cron_get(
-    client: TestClient,
-    table: SheetTable,
-    *,
-    secret: str = _SECRET,
-    params: dict[str, str] | None = None,
-    headers: dict[str, str] | None = None,
-):
-    """Call GET /api/registration/sync-google-sheet the way Vercel Cron does.
-
-    ``headers=None`` means "send the default valid bearer token"; pass an
-    explicit ``headers={}`` to send no Authorization header at all.
-    """
-    request_headers = dict(headers or {})
-    if secret is not None and headers is None:
-        request_headers["Authorization"] = f"Bearer {secret}"
-    with (
-        mock.patch("app.api.registration.get_settings") as get_cfg,
-        mock.patch(
-            "app.services.registration_sync_service.GoogleSheetsService.read_table",
-            return_value=table,
-        ),
-    ):
-        get_cfg.return_value.cron_secret = secret
-        return client.get(
-            CRON_ENDPOINT, params=params or {}, headers=request_headers
-        )
 
 
 def _write(client: TestClient, token: str, table: SheetTable):
@@ -232,53 +198,6 @@ def test_normalize_column_name_is_deterministic_and_safe():
     long_name = normalize_column_name("Member Ward " + "x" * 120)
     assert 0 < len(long_name) <= 63
     assert long_name[0].isalpha() or long_name[0] == "_"
-
-
-# --- cron authentication --------------------------------------------------
-
-
-def test_cron_rejects_missing_or_wrong_secret(client: TestClient):
-    table = _sheet([_cells("Should Not Run", _fresh_phone())])
-    for headers in (
-        {},  # no Authorization at all
-        {"Authorization": "Bearer wrong"},
-        {"Authorization": "Basic dXNlcjpwYXNz"},
-        {"Authorization": ""},
-    ):
-        response = _cron_get(client, table, headers=headers)
-        assert response.status_code == 401, response.text
-
-
-def test_cron_is_disabled_when_secret_is_unset(client: TestClient):
-    """An empty CRON_SECRET (the default) must refuse every scheduled call."""
-    table = _sheet([_cells("Should Not Run", _fresh_phone())])
-    response = _cron_get(client, table, secret="")
-    assert response.status_code == 401, response.text
-
-
-def test_cron_runs_the_same_sync_with_valid_secret(client: TestClient):
-    phone = _fresh_phone()
-    table = _sheet([_cells("Cron Dry Run", phone)])
-    response = _cron_get(client, table, params={"dry_run": "true"})
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
-    # Same service as POST: same counters, same response shape.
-    assert data["dry_run"] is True
-    assert data["total_rows"] == 1
-    assert data["inserted"] == 1
-    assert data["failed"] == 0
-    assert _member_row(phone) is None, "a cron dry run must not write"
-
-
-def test_cron_write_still_requires_the_kill_switch(client: TestClient):
-    table = _sheet([_cells("Cron Write", _fresh_phone())])
-    with mock.patch(
-        "app.services.registration_sync_service.get_settings"
-    ) as get_cfg:
-        get_cfg.return_value.google_sheets_sync_enabled = False
-        response = _cron_get(client, table)  # dry_run defaults to false
-    assert response.status_code == 400, response.text
-    assert "Writing is disabled" in response.text
 
 
 # --- automatic columns -----------------------------------------------------

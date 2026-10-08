@@ -6,11 +6,5 @@
       "memory": 1024,
       "excludeFiles": "{tests/**,**/*.test.py,fixtures/**,.venv/**,.mypy_cache/**,.pytest_cache/**,.ruff_cache/**}"
     }
-  },
-  "crons": [
-    {
-      "path": "/api/registration/sync-google-sheet",
-      "schedule": "*/10 * * * *"
-    }
-  ]
+  }
 }

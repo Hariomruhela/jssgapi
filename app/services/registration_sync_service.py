@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 SYNC_AUDIT_ACTION = "REGISTRATION_SYNC"
 
 # Transaction-scoped advisory lock key: one sheet sync writes at a time, so two
-# cron ticks (or a cron tick and a manual sync) cannot interleave. The lock is
-# released when the request's transaction commits or rolls back.
+# concurrent sync runs cannot interleave. The lock is released when the
+# request's transaction commits or rolls back.
 SYNC_LOCK_KEY = 8_412_773_001
 
 # Rows / issues echoed back to the caller; the counters are always complete.
