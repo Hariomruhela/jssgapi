@@ -14,3 +14,7 @@ api_router.include_router(registration_router)
 @api_router.get("/v1/ping", tags=["System"], include_in_schema=False)
 async def ping():
     return {"success": True, "message": "pong", "data": None}
+
+from app.api.v1.translate import router as translate_root_router
+
+api_router.include_router(translate_root_router)

@@ -186,6 +186,11 @@ class Settings(BaseSettings):
     google_sheets_data_start_row: int = 2
     google_sheets_service_account_json: str = ""
     google_sheets_sync_enabled: bool = False
+    # Google Cloud Translation
+    google_cloud_project: str = ""
+    google_service_account_json: str = ""
+    google_translate_enabled: bool = True
+
 
     # Payment
     payment_provider: str = ""

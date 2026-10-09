@@ -16,6 +16,7 @@ from app.api.v1.news import router as news_router
 from app.api.v1.notifications import router as notifications_router
 from app.api.v1.payments import router as payments_router
 from app.api.v1.professional import router as professional_router
+from app.api.v1.translate import router as translate_router
 from app.api.v1.profile import router as profile_router
 from app.api.v1.trustees import router as trustees_router
 from app.api.v1.users import router as users_router
@@ -43,3 +44,4 @@ for resource_router in [
 
 v1_router.include_router(family_router)
 v1_router.include_router(professional_router)
+v1_router.include_router(translate_router)
