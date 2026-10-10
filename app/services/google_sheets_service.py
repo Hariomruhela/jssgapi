@@ -31,7 +31,9 @@ def _credentials_from_inline_json(raw: str, scopes: list[str]) -> Any:
     from google.oauth2 import service_account
 
     try:
-        payload = json.loads(raw)
+        # strict=False tolerates raw control characters (e.g. literal newlines)
+        # that appear when a key file is pasted multi-line into an env var.
+        payload = json.loads(raw, strict=False)
     except json.JSONDecodeError as exc:
         raise ValidationException(
             "GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is not valid JSON: "
@@ -88,6 +90,12 @@ def load_google_credentials(settings: Any, scopes: list[str]) -> Any:
         return _credentials_from_inline_json(inline, scopes)
     path = (settings.google_application_credentials or "").strip()
     if path:
+        # Serverless hosts have no key file on disk, so the JSON itself is often
+        # placed in GOOGLE_APPLICATION_CREDENTIALS. Accept it inline rather than
+        # trying (and failing) to open it as a path.
+        if path.lstrip().startswith("{"):
+            logger.info("google credentials: inline json from application credentials")
+            return _credentials_from_inline_json(path, scopes)
         logger.info("google credentials: key file")
         return _credentials_from_file(path, scopes)
     logger.info("google credentials: application default credentials")
