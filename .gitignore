@@ -35,4 +35,4 @@ htmlcov/
 .ruff_cache/
 .idea/
 .vscode/
-.mac/
+.mac/jssgdata.json
