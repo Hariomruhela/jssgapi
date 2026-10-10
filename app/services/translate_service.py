@@ -64,7 +64,11 @@ def _get_credentials_from_inline(raw: str):
     from google.oauth2 import service_account
 
     try:
-        payload = json.loads(raw)
+        # strict=False tolerates raw control characters (e.g. literal newlines)
+        # that appear when the key is pasted multi-line into an env var. Without
+        # it a multi-line paste is rejected as invalid JSON and the failure is
+        # reported as "not configured", which hides the real cause.
+        payload = json.loads(raw, strict=False)
     except json.JSONDecodeError as exc:
         raise ServiceUnavailableException(
             "GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON"
@@ -115,6 +119,9 @@ def _translate_text(
 ) -> TranslationResult:
     try:
         client = _make_client()
+    except ServiceUnavailableException:
+        # Configuration problems already carry a specific, safe message.
+        raise
     except Exception as exc:
         logger.warning("Failed to initialize translation client: %s", exc)
         raise ServiceUnavailableException("Translation service is not configured")
@@ -151,13 +158,29 @@ def _translate_text(
 
     translated_text = translations[0].translated_text
     detected_language = getattr(translations[0], "detected_language_code", None) or source_language
+    if hasattr(detected_language, '__str__') and not isinstance(detected_language, str):
+        try:
+            detected_language = str(detected_language)
+        except Exception:
+            detected_language = None
+    if isinstance(detected_language, str) and detected_language == '':
+        detected_language = source_language if source_language else None
+    if source_language and isinstance(source_language, str) and source_language:
+        pass  # ok
+
+    if not isinstance(translated_text, str):
+        translated_text = str(translated_text) if translated_text is not None else ""
+
+    src_lang = source_language
+    if not src_lang:
+        src_lang = detected_language or ""
 
     return TranslationResult(
-        original_text=text,
+        original_text=text if isinstance(text, str) else str(text),
         translated_text=translated_text,
-        source_language=source_language or detected_language or "",
+        source_language=src_lang if src_lang else "",
         target_language=target_language,
-        detected_language=detected_language,
+        detected_language=detected_language if isinstance(detected_language, str) and detected_language else None,
     )
 
 
