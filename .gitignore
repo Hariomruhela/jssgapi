@@ -26,7 +26,7 @@ gcloud-key*.json
 *-????????????.json
 # Belt-and-braces: the key currently sitting in the repo root
 jssgdata-*.json
-
+jssgdata.json
 # Test & tooling
 .pytest_cache/
 .coverage
