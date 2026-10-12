@@ -884,6 +884,52 @@ def test_group_admin_cannot_assign_to_another_group(client, world):
     assert resp.status_code == 403, resp.text
 
 
+def test_group_create_collapses_case_variant_names(client, world):
+    """Re-submitting a name in another case reuses the existing group row.
+
+    Names arrive from free-text intake (sheets, manual entry), so
+    ``POST /groups`` used to create a second row per spelling and the panel
+    listed the same group several times.
+    """
+    engine = world["engine"]
+    headers = _auth(world["tokens"]["SUPER_ADMIN"])
+    stem = f"Case Group {uuid.uuid4().hex[:8]}"
+
+    first = client.post(
+        "/api/v1/groups", json={"name": stem.upper()}, headers=headers
+    )
+    assert first.status_code in (200, 201), first.text
+    first_id = first.json()["data"]["id"]
+
+    # Case and padding differences resolve to the same group.
+    second = client.post(
+        "/api/v1/groups", json={"name": f"  {stem.lower()}  "}, headers=headers
+    )
+    assert second.status_code in (200, 201), second.text
+    assert second.json()["data"]["id"] == first_id
+
+    try:
+        with Session(engine) as session:
+            rows = session.execute(
+                select(SocialGroup).where(SocialGroup.name.ilike(f"%{stem}%"))
+            ).scalars().all()
+        # Exactly one row survived, not one per spelling.
+        assert len(rows) == 1, [r.name for r in rows]
+
+        # A genuinely different name is not folded in.
+        other = client.post(
+            "/api/v1/groups", json={"name": f"{stem} group"}, headers=headers
+        )
+        assert other.status_code in (200, 201), other.text
+        assert other.json()["data"]["id"] != first_id
+    finally:
+        with Session(engine) as session:
+            session.execute(
+                delete(SocialGroup).where(SocialGroup.name.ilike(f"%{stem}%"))
+            )
+            session.commit()
+
+
 def test_super_admin_adds_and_removes_group_member(client, world):
     engine = world["engine"]
     target = _create_user(engine, "MEMBER", _next_phone())

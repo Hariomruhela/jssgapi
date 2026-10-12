@@ -20,6 +20,19 @@ class SyncGoogleSheetRequest(BaseModel):
     limit: int | None = Field(default=None, ge=1, le=5000)
 
 
+class SyncGoogleSheetPhotosRequest(SyncGoogleSheetRequest):
+    """Options for ``POST /api/registration/sync-google-sheet-photos``.
+
+    Runs the sheet import and then copies/replaces the member and spouse photos
+    in cloud storage. Photos are processed a batch at a time because a request
+    has a wall clock; page through them with ``photo_offset`` until the photo
+    summary reports ``has_more=false``.
+    """
+
+    photo_limit: int = Field(default=50, ge=1, le=200)
+    photo_offset: int = Field(default=0, ge=0)
+
+
 class RowIssue(BaseModel):
     """A validation problem found on one sheet row."""
 

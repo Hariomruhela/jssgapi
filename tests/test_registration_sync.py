@@ -301,10 +301,13 @@ def test_dry_run_counts_duplicates_and_failures(client: TestClient, admin_token:
     assert actions[4] == "failed"
     assert actions[5] == "failed"
     assert actions[6] == "failed"
-    assert actions[7] == "failed"
+    # The email already belongs to an existing user, so the row is linked to
+    # that user instead of creating a second identity for them.
+    assert actions[7] == "link"
     assert data["inserted"] == 1
+    assert data["linked_existing_user"] == 1
     assert data["skipped_duplicate"] == 1
-    assert data["failed"] == 4
+    assert data["failed"] == 3
     assert _counts() == before
 
 
@@ -340,6 +343,74 @@ def test_dry_run_links_existing_user(client: TestClient, admin_token: str):
     assert data["inserted"] == 0
     assert data["linked_existing_user"] == 1
     assert data["rows"][0]["action"] == "link"
+
+
+def test_write_mode_links_by_email_without_a_duplicate(
+    client: TestClient, admin_token: str
+):
+    """A row whose email already exists must link, never create a second user."""
+    email = f"email_match_{int(time.time() * 1000)}@test.local"
+    existing_phone = _fresh_phone()
+    _create_user(existing_phone, email)
+    row_phone = _fresh_phone()
+    table = _table(
+        [
+            _row(
+                "t",
+                "Email Match",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                row_phone,
+                email,
+            )
+        ]
+    )
+    engine = create_engine(_psycopg_url(), poolclass=NullPool)
+    try:
+        with mock.patch(
+            "app.services.registration_sync_service.get_settings"
+        ) as get_cfg:
+            get_cfg.return_value.google_sheets_sync_enabled = True
+            response = _call(client, admin_token, table, dry_run=False)
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["inserted"] == 0, data
+        assert data["linked_existing_user"] == 1, data
+        assert data["failed"] == 0, data["errors"]
+
+        with Session(engine) as session:
+            users = (
+                session.execute(
+                    select(User.id).where(func.lower(User.email) == email)
+                )
+                .scalars()
+                .all()
+            )
+            assert len(users) == 1, "no duplicate user for one email"
+            member = session.execute(
+                select(Member).where(Member.user_id == users[0])
+            ).scalar_one()
+            assert member.contact_phone == row_phone
+    finally:
+        with Session(engine) as session:
+            user_ids = (
+                session.execute(
+                    select(User.id).where(func.lower(User.email) == email)
+                )
+                .scalars()
+                .all()
+            )
+            if user_ids:
+                session.execute(delete(Member).where(Member.user_id.in_(user_ids)))
+                session.commit()
 
 
 def test_dry_run_flags_unreadable_dates(client: TestClient, admin_token: str):
@@ -669,3 +740,46 @@ def test_write_mode_actually_fills_profile_data(client: TestClient, admin_token:
                 session.delete(member)
                 session.execute(delete(User).where(User.id == member.user_id))
             session.commit()
+
+
+PHOTOS_ENDPOINT = "/api/registration/sync-google-sheet-photos"
+
+
+def test_sync_photos_endpoint_requires_authentication(client: TestClient):
+    response = client.post(PHOTOS_ENDPOINT, json={"dry_run": True})
+    assert response.status_code == 401
+
+
+def test_sync_photos_endpoint_returns_sync_and_photo_summaries(
+    client: TestClient, admin_token: str
+):
+    """The combined route runs the sheet import and the photo migration."""
+    phone = _fresh_phone()
+    table = _table(
+        [_row("t", "Combined Person", "", "", "", "", "", "", "", "", "", "", phone)]
+    )
+    with (
+        mock.patch(
+            "app.services.registration_sync_service.GoogleSheetsService.read_table",
+            return_value=table,
+        ),
+        mock.patch(
+            "app.services.registration_sync_service.GoogleSheetsService.verify_access"
+        ),
+    ):
+        response = client.post(
+            PHOTOS_ENDPOINT,
+            json={"dry_run": True, "spreadsheet_id": SHEET_ID},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert set(data) == {"sync", "photos"}
+    assert data["sync"]["dry_run"] is True
+    assert data["sync"]["inserted"] == 1
+    photos = data["photos"]
+    assert photos["dry_run"] is True
+    assert "replaced" in photos
+    assert "has_more" in photos
+    assert "next_offset" in photos
+

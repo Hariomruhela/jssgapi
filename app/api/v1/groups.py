@@ -124,7 +124,9 @@ async def list_groups(
             "Groups fetched successfully",
             [SocialGroupOut.model_validate(g) for g in groups],
         )
-    stmt = select(SocialGroup)
+    # A deleted group is soft-deleted (`is_deleted=True`); keep it out of the
+    # listing so the panel's group directory reflects the deletion.
+    stmt = select(SocialGroup).where(SocialGroup.is_deleted.is_(False))
     filters: dict[str, Any] = {
         k: v for k, v in {"status": status}.items() if v is not None
     }

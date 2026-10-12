@@ -247,12 +247,21 @@ async def list_social_group_names(db: DBSession, current_user: CurrentUser):
             .where(*conditions, SocialGroup.is_deleted.is_(False))
         )
     ).scalars()
-    names = {
-        name.strip()
-        for name in (*profile_names, *linked_names)
-        if name and name.strip()
-    }
-    return ok("Social groups fetched successfully", sorted(names, key=str.casefold))
+    # Free-text intake stores the same group under many spellings ("Jssg
+    # professional unity", "JSSG PROFESSIONAL UNITY", ...). Collapsing names
+    # that differ only by case or padding keeps the Members filter and the
+    # panel's group directory free of duplicate rows. One representative per
+    # case-folded key survives - the deterministic first after a case-folded
+    # sort - while genuinely different names ("... unity" vs "... unity group")
+    # stay separate.
+    representatives: dict[str, str] = {}
+    for name in sorted(
+        {n.strip() for n in (*profile_names, *linked_names) if n and n.strip()},
+        key=lambda n: (n.casefold(), n),
+    ):
+        representatives.setdefault(name.casefold(), name)
+    names = sorted(representatives.values(), key=str.casefold)
+    return ok("Social groups fetched successfully", names)
 
 
 @router.get("/{member_id}", dependencies=[READ])

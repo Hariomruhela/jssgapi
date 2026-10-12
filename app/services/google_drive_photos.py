@@ -201,6 +201,7 @@ class DrivePhotoDownloader:
         self.settings = settings
         self.timeout = timeout
         self._service = None
+        self._service_account_email: str | None = None
 
     # ------------------------------------------------------------------
     # service-account path
@@ -210,6 +211,9 @@ class DrivePhotoDownloader:
             from googleapiclient.discovery import build
 
             credentials = load_google_credentials(self.settings, DRIVE_SCOPES)
+            self._service_account_email = getattr(
+                credentials, "service_account_email", None
+            )
             self._service = build(
                 "drive", "v3", credentials=credentials, cache_discovery=False
             )
@@ -235,6 +239,13 @@ class DrivePhotoDownloader:
                 .execute()
             )
         except Exception as exc:
+            if _is_api_disabled(exc):
+                # The 403 here is not about this file: the Drive API is off for
+                # the whole project. Falling back to the public path would only
+                # hide that behind an "HTML page" message, so report it now.
+                raise DrivePhotoError(
+                    _api_disabled_reason(self._service_account_email)
+                ) from exc
             if _is_access_error(exc):
                 logger.info(
                     "drive file %s is not readable by the service account: %s",
@@ -396,10 +407,42 @@ def _reject_html(file_id: str, content: bytes) -> None:
     if _looks_like_html(content):
         raise DrivePhotoError(
             f"drive file {file_id} served a sign-in or preview HTML page, "
-            "not image bytes"
+            "not image bytes; the file is not shared with the service account "
+            'and is not "anyone with the link"'
         )
     if not content:
         raise DrivePhotoError(f"drive file {file_id} is empty")
+
+
+def _is_api_disabled(exc: Exception) -> bool:
+    """True when Google refused the call because the API is off for the project.
+
+    That is an operator fix (enable the API), not a per-file sharing problem, so
+    it must not be mistaken for the service account simply lacking access.
+    """
+    details = getattr(exc, "error_details", None) or []
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        if detail.get("reason") in ("accessNotConfigured", "serviceDisabled"):
+            return True
+    text = str(exc).lower()
+    return (
+        "has not been used in project" in text
+        or "api has not been used" in text
+        or "accessnotconfigured" in text
+        or ("api" in text and "is disabled" in text)
+    )
+
+
+def _api_disabled_reason(service_account_email: str | None) -> str:
+    who = f" for {service_account_email}" if service_account_email else ""
+    return (
+        "Google Drive API is not enabled on the project"
+        f"{who}; enable it in the Google Cloud console, then share the photo "
+        "files (or their folder) with the service account or make them "
+        '"anyone with the link"'
+    )
 
 
 def _is_access_error(exc: Exception) -> bool:

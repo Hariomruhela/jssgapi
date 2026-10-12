@@ -49,6 +49,11 @@ DRIVE_LINK = f"https://drive.google.com/open?id={JPEG_FILE_ID}"
 SPOUSE_FILE_ID = "1ZyXwVuTsRqPoNmLkJiHgFeDcBa09876"
 SPOUSE_DRIVE_LINK = f"https://drive.google.com/file/d/{SPOUSE_FILE_ID}/view?usp=sharing"
 
+# A second photo for the same slot, to exercise a changed sheet link.
+NEW_FILE_ID = "1NewPhotoFileIdAbCdEfGhIjKl"
+NEW_DRIVE_LINK = f"https://drive.google.com/open?id={NEW_FILE_ID}"
+NEW_BYTES = PNG_BYTES + b"\x00"
+
 
 class _FakeStorage(StorageBackend):
     """In-memory storage so the tests never touch a real bucket."""
@@ -432,6 +437,135 @@ async def test_recorded_key_whose_object_vanished_is_re_migrated():
 
 
 @pytest.mark.asyncio
+async def test_changed_sheet_link_replaces_the_stored_photo():
+    """A new photo link in the sheet must replace the old stored bytes."""
+    async with _session() as db_session:
+        storage = _FakeStorage()
+        downloader = _FakeDownloader(
+            {NEW_FILE_ID: DownloadedPhoto(NEW_BYTES, "image/png", "member.png")}
+        )
+        member_id = await _make_member(
+            db_session, profile_photo_url=DRIVE_LINK, first_name="replace"
+        )
+        first = await _run(db_session, storage, downloader, dry_run=False)
+        assert first.migrated == 1
+        key = f"members/{member_id}/photos/member.png"
+        assert storage.objects[key][0] == PNG_BYTES
+
+        # What the sheet sync writes when the admin replaces the photo link.
+        member = await _load(db_session, member_id)
+        member.profile_photo_url = NEW_DRIVE_LINK
+        member.profile_data = {"member_photo_link": NEW_DRIVE_LINK}
+        await db_session.flush()
+
+        second = await _run(db_session, storage, downloader, dry_run=False)
+        assert second.replaced == 1, second.to_dict()
+        assert second.migrated == 0
+        # Same extension -> same key, overwritten with the new bytes.
+        assert storage.objects[key][0] == NEW_BYTES
+        member = await _load(db_session, member_id)
+        assert member.profile_photo_url == f"https://photos.example.test/{key}"
+        # The preserved source now points at the new file, so a re-run is a no-op.
+        assert member.profile_photo_drive_url == NEW_DRIVE_LINK
+        third = await _run(db_session, storage, downloader, dry_run=False)
+        assert third.already_migrated == 1
+        assert third.replaced == 0
+
+
+@pytest.mark.asyncio
+async def test_changed_sheet_link_dry_run_reports_replacement_only():
+    async with _session() as db_session:
+        storage = _FakeStorage()
+        downloader = _FakeDownloader()
+        member_id = await _make_member(
+            db_session, profile_photo_url=DRIVE_LINK, first_name="dry-replace"
+        )
+        await _run(db_session, storage, downloader, dry_run=False)
+        uploads_before = len(storage.uploads)
+
+        member = await _load(db_session, member_id)
+        member.profile_photo_url = NEW_DRIVE_LINK
+        member.profile_data = {"member_photo_link": NEW_DRIVE_LINK}
+        await db_session.flush()
+
+        summary = await _run(db_session, storage, downloader, dry_run=True)
+        assert summary.replaced == 1
+        assert summary.dry_run is True
+        assert len(storage.uploads) == uploads_before, "a dry run uploads nothing"
+
+
+@pytest.mark.asyncio
+async def test_replacement_with_a_new_extension_deletes_the_old_object():
+    """A changed photo of a different type must not leave the old object behind."""
+    async with _session() as db_session:
+        storage = _FakeStorage()
+        downloader = _FakeDownloader(
+            {NEW_FILE_ID: DownloadedPhoto(NEW_BYTES, "image/jpeg", "photo.jpg")}
+        )
+        member_id = await _make_member(
+            db_session, profile_photo_url=DRIVE_LINK, first_name="extension"
+        )
+        await _run(db_session, storage, downloader, dry_run=False)
+        old_key = f"members/{member_id}/photos/member.png"
+        assert old_key in storage.objects
+
+        member = await _load(db_session, member_id)
+        member.profile_photo_url = NEW_DRIVE_LINK
+        member.profile_data = {"member_photo_link": NEW_DRIVE_LINK}
+        await db_session.flush()
+
+        summary = await _run(db_session, storage, downloader, dry_run=False)
+        assert summary.replaced == 1
+        new_key = f"members/{member_id}/photos/member.jpg"
+        assert new_key in storage.objects
+        assert old_key not in storage.objects, "the superseded object is deleted"
+
+        keys = set(
+            (
+                await db_session.execute(
+                    select(Media.r2_object_key).where(
+                        Media.owner_id == member_id,
+                        Media.is_deleted.is_(False),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert keys == {new_key}, "the superseded media row is retired"
+
+
+@pytest.mark.asyncio
+async def test_spouse_photo_change_is_replaced_independently():
+    async with _session() as db_session:
+        storage = _FakeStorage()
+        downloader = _FakeDownloader(
+            {NEW_FILE_ID: DownloadedPhoto(NEW_BYTES, "image/png", "spouse.png")}
+        )
+        member_id = await _make_member(
+            db_session,
+            profile_photo_url=DRIVE_LINK,
+            profile_data={"spouse_photo_link": SPOUSE_DRIVE_LINK},
+            first_name="spouse-replace",
+        )
+        first = await _run(db_session, storage, downloader, dry_run=False)
+        assert first.migrated == 2
+
+        member = await _load(db_session, member_id)
+        profile = dict(member.profile_data or {})
+        profile["spouse_photo_link"] = NEW_DRIVE_LINK
+        member.profile_data = profile
+        await db_session.flush()
+
+        second = await _run(db_session, storage, downloader, dry_run=False)
+        assert second.replaced == 1
+        # The member photo is unchanged and stays as it was.
+        assert second.already_migrated == 1
+        member = await _load(db_session, member_id)
+        assert member.spouse_photo_drive_url == NEW_DRIVE_LINK
+
+
+@pytest.mark.asyncio
 async def test_storage_outage_is_reported_not_silently_ignored():
     async with _session() as db_session:
 
@@ -538,3 +672,88 @@ async def test_local_disk_backend_reports_whether_an_object_exists(tmp_path):
     backend.upload_bytes("image/a/b.jpg", PNG_BYTES, "image/png")
     assert backend.object_exists("image/a/b.jpg") is True
     assert backend.read_bytes("image/a/b.jpg") == PNG_BYTES
+
+
+# ----------------------------------------------------------------------
+# Drive API disabled vs. no access
+# ----------------------------------------------------------------------
+def test_api_disabled_is_detected_from_error_details():
+    from app.services.google_drive_photos import _is_api_disabled
+
+    class _HttpError(Exception):
+        def __init__(self, details):
+            super().__init__("boom")
+            self.error_details = details
+
+    assert _is_api_disabled(
+        _HttpError([{"reason": "accessNotConfigured", "domain": "usageLimits"}])
+    )
+    assert _is_api_disabled(_HttpError([{"reason": "serviceDisabled"}]))
+    # A plain "file not found" is a sharing problem, not a disabled API.
+    assert not _is_api_disabled(_HttpError([{"reason": "notFound"}]))
+
+
+def test_api_disabled_is_detected_from_the_message_when_details_are_absent():
+    from app.services.google_drive_photos import _is_api_disabled
+
+    assert _is_api_disabled(
+        Exception(
+            "Google Drive API has not been used in project 123 before or it is "
+            "disabled."
+        )
+    )
+    assert not _is_api_disabled(Exception("file not found"))
+
+
+def test_downloader_reports_a_disabled_drive_api_rather_than_falling_back(
+    monkeypatch,
+):
+    """A disabled API is an operator fix, not a silent "no access" fallback."""
+    from app.services.google_drive_photos import DrivePhotoDownloader
+
+    downloader = DrivePhotoDownloader(settings=object(), timeout=1)
+
+    class _HttpError(Exception):
+        def __init__(self) -> None:
+            super().__init__("Google Drive API has not been used in project 1")
+            self.error_details = [{"reason": "accessNotConfigured"}]
+
+    def _boom():
+        raise _HttpError()
+
+    monkeypatch.setattr(downloader, "_drive_service", _boom)
+
+    link = PhotoLink(PhotoLinkKind.FILE_ID, url=DRIVE_LINK, file_id=JPEG_FILE_ID)
+    with pytest.raises(DrivePhotoError) as excinfo:
+        downloader.download(link, "member")
+    assert "Drive API is not enabled" in excinfo.value.reason
+
+
+def test_downloader_falls_back_to_the_public_path_on_a_sharing_error(monkeypatch):
+    """A file the service account cannot see must still be tried anonymously."""
+    from app.services.google_drive_photos import DrivePhotoDownloader
+
+    downloader = DrivePhotoDownloader(settings=object(), timeout=1)
+
+    class _NotFound(Exception):
+        def __init__(self) -> None:
+            super().__init__("File not found: abc")
+            self.error_details = [{"reason": "notFound"}]
+
+    def _boom():
+        raise _NotFound()
+
+    monkeypatch.setattr(downloader, "_drive_service", _boom)
+
+    called: dict[str, object] = {}
+
+    def _fake_public(file_id, direct_url, role):
+        called["file_id"] = file_id
+        return DownloadedPhoto(PNG_BYTES, "image/png", "member.png")
+
+    monkeypatch.setattr(downloader, "_download_publicly", _fake_public)
+
+    link = PhotoLink(PhotoLinkKind.FILE_ID, url=DRIVE_LINK, file_id=JPEG_FILE_ID)
+    photo = downloader.download(link, "member")
+    assert called["file_id"] == JPEG_FILE_ID
+    assert photo.content == PNG_BYTES

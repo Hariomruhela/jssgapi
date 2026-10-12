@@ -88,6 +88,13 @@ def _get_credentials():
     if inline:
         return _get_credentials_from_inline(inline)
 
+    # Serverless hosts have no key file on disk, so the JSON itself is sometimes
+    # placed in GOOGLE_APPLICATION_CREDENTIALS. Accept it inline instead of
+    # letting google.auth.default() fail trying to open it as a path.
+    path = (settings.google_application_credentials or "").strip()
+    if path.lstrip().startswith("{"):
+        return _get_credentials_from_inline(path)
+
     try:
         import google.auth
         credentials, _ = google.auth.default()

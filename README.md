@@ -372,6 +372,16 @@ Or through the admin API, which defaults to `dry_run=true`:
 POST /api/v1/media/migrate-drive-photos?dry_run=true
 ```
 
+To import the sheet and copy/replace the photos in one call, use the combined
+admin route (requires `member.create` and `media.migrate`). It writes nothing
+unless `dry_run=false` and `GOOGLE_SHEETS_SYNC_ENABLED=true`, and pages the
+photos with `photo_limit` / `photo_offset` until `photos.has_more` is `false`:
+
+```
+POST /api/registration/sync-google-sheet-photos
+{ "dry_run": true, "photo_limit": 50, "photo_offset": 0 }
+```
+
 Requires the `media.migrate` permission (ADMIN / SUPER_ADMIN). Properties:
 
 - Nothing in Drive is modified. No file is shared, renamed, moved or deleted.
@@ -380,6 +390,9 @@ Requires the `media.migrate` permission (ADMIN / SUPER_ADMIN). Properties:
 - Idempotent: a photo is copied at most once, and later runs report
   `already_migrated`. If a stored object later disappears, the preserved Drive
   link is used to copy it again.
+- A changed sheet link **replaces** the stored photo: the new bytes are copied,
+  the member is repointed, and the superseded R2 object (and its `media` row) is
+  deleted. Those runs report `replaced`.
 - A photo that cannot be read is reported in `failures` with the member, the
   field, the original link and the reason; it does not stop the batch.
 - A file is fetched through the configured service account, or anonymously when

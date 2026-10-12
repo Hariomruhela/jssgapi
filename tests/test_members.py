@@ -264,3 +264,23 @@ def test_members_social_groups_lists_distinct_names(
     assert group_name in names
     assert len(names) == len(set(names))
     assert names == sorted(names, key=str.casefold)
+
+
+def test_members_social_groups_collapses_case_variants(
+    client: TestClient, auth: dict
+):
+    """Free-text names that differ only by case/padding are one group.
+
+    The panel's group directory lists these names directly, so returning
+    "Jssg professional unity" and "JSSG PROFESSIONAL UNITY" separately is what
+    made a single group appear several times.
+    """
+    stem = f"Unity Case {str(time.time_ns())[-6:]}"
+    _create_member_in_group(client, auth, stem.upper())
+    _create_member_in_group(client, auth, f"  {stem.lower()}  ")
+
+    response = client.get("/api/v1/members/social-groups", headers=auth)
+    assert response.status_code == 200, response.text
+    names = response.json()["data"]
+    matches = [name for name in names if name.casefold() == stem.casefold()]
+    assert len(matches) == 1, matches

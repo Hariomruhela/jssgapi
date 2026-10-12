@@ -744,13 +744,15 @@ class RegistrationSyncService:
     # ------------------------------------------------------------------
     async def _existing_users(
         self, rows: list[ParsedRow]
-    ) -> tuple[dict[str, User], dict[str, str]]:
-        """Return (users by phone key, email -> phone key of the owning user).
+    ) -> tuple[dict[str, User], dict[str, User]]:
+        """Return (users by phone key, users by lower-cased email).
 
-        Duplicate detection is keyed on ``users.phone_number`` — the column that
-        already carries a UNIQUE index and that every login resolves against.
-        Both the E.164 and the bare 10-digit form are matched so a legacy row
-        written without the ``+91`` prefix is not imported twice.
+        Duplicate detection is keyed on ``users.phone_number`` - the column that
+        already carries a UNIQUE index and that every login resolves against -
+        and on ``users.email``. Both the E.164 and the bare 10-digit phone form
+        are matched so a legacy row written without the ``+91`` prefix is not
+        imported twice. A row matches an existing user when either its mobile
+        number or its email already belongs to one.
         """
         phones = {row.phone for row in rows if row.phone}
         emails = {row.email for row in rows if row.email}
@@ -761,7 +763,7 @@ class RegistrationSyncService:
             return {}, {}
 
         users_by_phone: dict[str, User] = {}
-        emails_owner: dict[str, str] = {}
+        users_by_email: dict[str, User] = {}
         batch_size = 500
         phone_list = sorted(phone_forms)
         email_list = sorted(emails)
@@ -776,15 +778,15 @@ class RegistrationSyncService:
                 users_by_phone[phone_key(user.phone_number)] = user
         for start in range(0, len(email_list), batch_size):
             result = await self.session.execute(
-                select(User.email, User.phone_number).where(
+                select(User).where(
                     User.is_deleted.is_(False),
                     User.email.in_(email_list[start : start + batch_size]),
                 )
             )
-            for email, phone in result.all():
-                if email:
-                    emails_owner[email.lower()] = phone_key(phone)
-        return users_by_phone, emails_owner
+            for user in result.scalars().all():
+                if user.email:
+                    users_by_email[user.email.lower()] = user
+        return users_by_phone, users_by_email
 
     async def _members_by_user(self, users: list[User]) -> dict[Any, Member]:
         """user_id -> existing member row (the upsert target).
@@ -949,8 +951,12 @@ class RegistrationSyncService:
         rows = [self._parse_row(number, cells, headers) for number, cells in table.rows]
         valid_rows = [row for row in rows if row.valid]
 
-        users_by_phone, emails_owner = await self._existing_users(valid_rows)
-        members_by_user = await self._members_by_user(list(users_by_phone.values()))
+        users_by_phone, users_by_email = await self._existing_users(valid_rows)
+        matched_users = {
+            user.id: user
+            for user in (*users_by_phone.values(), *users_by_email.values())
+        }
+        members_by_user = await self._members_by_user(list(matched_users.values()))
 
         member_role_id: Any = None
         if not options.dry_run:
@@ -963,6 +969,7 @@ class RegistrationSyncService:
         warnings: list[RowIssue] = []
         inserted = linked = updated = skipped = failed = 0
         seen_phones: dict[str, int] = {}
+        seen_emails: dict[str, int] = {}
 
         for row in rows:
             errors.extend(row.errors)
@@ -984,6 +991,7 @@ class RegistrationSyncService:
 
             assert row.phone is not None
             key = phone_key(row.phone)
+            email_key = row.email.lower() if row.email else None
             first_seen = seen_phones.get(key)
             if first_seen is not None:
                 skipped += 1
@@ -1000,14 +1008,44 @@ class RegistrationSyncService:
                     )
                 )
                 continue
+            if email_key is not None:
+                email_seen = seen_emails.get(email_key)
+                if email_seen is not None:
+                    skipped += 1
+                    results.append(
+                        RowResult(
+                            row=row.row_number,
+                            action="skipped",
+                            name=row.full_name,
+                            phone=row.masked_phone(),
+                            reason=(
+                                "duplicate Email ID "
+                                f"(first seen on row {email_seen})"
+                            ),
+                        )
+                    )
+                    continue
             seen_phones[key] = row.row_number
+            if email_key is not None:
+                seen_emails[email_key] = row.row_number
 
-            if row.email and emails_owner.get(row.email.lower(), key) != key:
+            # A member is identified by their mobile number OR their email. When
+            # the two point at different users, merging would fold two people
+            # into one, so the row is rejected instead.
+            user_by_phone = users_by_phone.get(key)
+            user_by_email = users_by_email.get(email_key) if email_key else None
+            if (
+                user_by_phone is not None
+                and user_by_email is not None
+                and user_by_phone.id != user_by_email.id
+            ):
                 failed += 1
                 issue = RowIssue(
                     row=row.row_number,
                     column="email",
-                    message=f"Email ID already belongs to another member ({row.email})",
+                    message=(
+                        "Mobile Number and Email ID belong to different members"
+                    ),
                 )
                 errors.append(issue)
                 results.append(
@@ -1021,7 +1059,7 @@ class RegistrationSyncService:
                 )
                 continue
 
-            user = users_by_phone.get(key)
+            user = user_by_phone or user_by_email
             existing_member = (
                 members_by_user.get(user.id) if user is not None else None
             )
@@ -1079,8 +1117,8 @@ class RegistrationSyncService:
                         reason=(
                             None
                             if action == "insert"
-                            else "mobile number already registered; member record "
-                            "would be created for the existing user"
+                            else "mobile number or email already registered; "
+                            "member record would be created for the existing user"
                         ),
                     )
                 )
@@ -1093,7 +1131,11 @@ class RegistrationSyncService:
                     )
                 members_by_user[member.user_id] = member
                 if user is None:
-                    users_by_phone[key] = member.user
+                    created_user = member.user
+                    if created_user is not None:
+                        users_by_phone[key] = created_user
+                        if email_key is not None:
+                            users_by_email[email_key] = created_user
                     inserted += 1
                 else:
                     linked += 1
