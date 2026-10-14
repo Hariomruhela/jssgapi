@@ -33,6 +33,22 @@ class SyncGoogleSheetPhotosRequest(SyncGoogleSheetRequest):
     photo_offset: int = Field(default=0, ge=0)
 
 
+class SyncGoogleSheetGroupsRequest(BaseModel):
+    """Options for ``POST /api/registration/sync-google-sheet-groups``.
+
+    Materializes the group names found on the registration sheet and in the
+    member directory into the ``social_groups`` table, so the Groups CRUD API
+    can list, edit and delete every group.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    include_sheet: bool = True
+    include_member_data: bool = True
+    link_members: bool = True
+
+
+
 class RowIssue(BaseModel):
     """A validation problem found on one sheet row."""
 

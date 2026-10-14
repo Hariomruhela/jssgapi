@@ -6,16 +6,19 @@ from app.core.permissions import Permission
 from app.core.responses import ok
 from app.dependencies import CurrentUser, DBSession, require_permission
 from app.schemas.registration import (
+    SyncGoogleSheetGroupsRequest,
     SyncGoogleSheetPhotosRequest,
     SyncGoogleSheetRequest,
 )
 from app.services.drive_photo_migration import DrivePhotoMigration
 from app.services.registration_sync_service import RegistrationSyncService
+from app.services.sheet_groups_service import import_member_groups
 
 router = APIRouter(prefix="/registration", tags=["Registration"])
 
 SYNC = Depends(require_permission(Permission.MEMBER_CREATE))
 MIGRATE = Depends(require_permission(Permission.MEDIA_MIGRATE))
+GROUP_SYNC = Depends(require_permission(Permission.GROUP_CREATE))
 
 
 @router.post("/sync-google-sheet", dependencies=[SYNC])
@@ -100,3 +103,24 @@ async def sync_google_sheet_photos(
             "photos": photos,
         },
     )
+
+
+@router.post("/sync-google-sheet-groups", dependencies=[GROUP_SYNC])
+async def sync_google_sheet_groups(
+    body: SyncGoogleSheetGroupsRequest,
+    current_user: CurrentUser,
+    db: DBSession,
+) -> dict:
+    """Save every group name (sheet + member directory) into ``social_groups``.
+
+    Idempotent: a name that already exists case/padding-insensitively is kept,
+    not duplicated. Members whose free-text group name matches are linked to the
+    group row so the Groups API lists them and delete unlinks them cleanly.
+    """
+    summary = await import_member_groups(
+        db,
+        sheet_names=None if body.include_sheet else (),
+        include_member_data=body.include_member_data,
+        link_members=body.link_members,
+    )
+    return ok(summary.message, summary.to_dict())

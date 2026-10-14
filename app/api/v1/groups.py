@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from app.core.constants import AuditAction, RoleName, resolve_role_name
 from app.core.exceptions import (
     BadRequestException,
+    ConflictException,
     ForbiddenException,
     NotFoundException,
 )
@@ -415,15 +416,45 @@ async def update_group(
 
 
 @router.delete("/{group_id}", dependencies=[DELETE])
-async def delete_group(group_id: UUID, current_user: CurrentUser, db: DBSession):
+async def delete_group(
+    group_id: UUID,
+    current_user: CurrentUser,
+    db: DBSession,
+    force: bool = Query(
+        default=False,
+        description="Unlink dependent news/fees/trustees/media and delete anyway",
+    ),
+):
+    """Permanently delete a group.
+
+    Unlike most resources in this API a group is **hard-deleted**, so the row
+    actually leaves the database. Members, users, advertisements and events are
+    unlinked automatically (the FK is ``ON DELETE SET NULL``). News, fees,
+    trustees and media would be cascade-deleted, so the request is refused with
+    ``409`` while any live row references the group; re-send with ``force=true``
+    to unlink those rows and delete the group instead.
+    """
     repo = GroupRepository(db)
     group = await repo.get_by_id(group_id)
     if group is None:
         raise NotFoundException("Group", str(group_id))
     await assert_group_access(db, current_user, group.id)
-    await repo.delete(group)
+
+    dependents = await repo.count_live_dependents(group.id)
+    blocking = {name: count for name, count in dependents.items() if count}
+    if blocking and not force:
+        raise ConflictException(
+            "Group has linked records ("
+            + ", ".join(f"{name}: {count}" for name, count in blocking.items())
+            + "). Re-send with force=true to unlink them and delete the group."
+        )
+
+    group_id_value = group.id
+    await repo.hard_delete(group)
     await AuditService(db).log(
-        AuditAction.GROUP_DELETE, entity_type="group", entity_id=group.id
+        AuditAction.GROUP_DELETE,
+        entity_type="group",
+        entity_id=group_id_value,
+        details={"hard_delete": True, "force": force, "unlinked": blocking},
     )
-    await db.flush()
     return ok("Group deleted successfully")

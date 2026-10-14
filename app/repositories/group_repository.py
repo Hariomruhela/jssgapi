@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 
+from app.models.fee import Fee
 from app.models.group import SocialGroup
+from app.models.media import Media
+from app.models.news import News
+from app.models.trustee import Trustee
 from app.repositories.base_repository import BaseRepository
+
+#: Tables whose ``group_id`` FK is ``ON DELETE CASCADE``. A hard delete would
+#: silently destroy these rows, so the delete route checks them first and
+#: unlinks them instead when it is explicitly allowed to proceed.
+CASCADE_DEPENDENT_MODELS = (News, Fee, Trustee, Media)
 
 
 class GroupRepository(BaseRepository[SocialGroup]):
@@ -67,3 +76,36 @@ class GroupRepository(BaseRepository[SocialGroup]):
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def count_live_dependents(self, group_id: uuid.UUID) -> dict[str, int]:
+        """Non-deleted rows per cascade table that point at this group.
+
+        Soft-deleted dependents are ignored: they are already hidden, so a
+        group can still be removed when only a soft-deleted file or article
+        references it.
+        """
+        counts: dict[str, int] = {}
+        for model in CASCADE_DEPENDENT_MODELS:
+            stmt = select(func.count()).select_from(model).where(
+                model.group_id == group_id, model.is_deleted.is_(False)
+            )
+            counts[model.__tablename__] = int(
+                (await self.session.execute(stmt)).scalar_one()
+            )
+        return counts
+
+    async def hard_delete(self, group: SocialGroup) -> None:
+        """Physically delete a group, unlinked from its cascade dependents.
+
+        Every ``CASCADE_DEPENDENT_MODELS`` row that points at the group is
+        unlinked (``group_id = NULL``) first, so the FK cascade has nothing to
+        destroy. ``members``/``users``/``advertisements``/``events`` are
+        ``ON DELETE SET NULL`` and unlink themselves.
+        """
+        for model in CASCADE_DEPENDENT_MODELS:
+            await self.session.execute(
+                update(model).where(model.group_id == group.id).values(group_id=None)
+            )
+        await self.session.delete(group)
+        await self.session.flush()
+

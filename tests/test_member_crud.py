@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -22,6 +22,7 @@ from app.main import app
 from app.models.group import SocialGroup
 from app.models.media import Media, MediaObject
 from app.models.member import Member
+from app.models.news import News
 from app.models.user import Role, User
 from app.services.google_sheets_service import SheetTable
 from app.services.media_storage import StorageBackend
@@ -671,3 +672,149 @@ def test_groups_from_the_live_google_sheet(client, auth):
         assert item["field"] in ("social_group_name", "group_designation")
         assert item["name"].strip()
         assert item["id"]
+
+
+# --- group import (sheet + member data -> social_groups) --------------------
+
+
+def _group_rows(*names: str) -> SheetTable:
+    return SheetTable(
+        spreadsheet_id="test-sheet",
+        sheet_name="Sheet1",
+        header_row=1,
+        data_start_row=2,
+        columns=(("A", "Social Group / Association Name"), ("B", "Full Name")),
+        rows=tuple((i + 2, (name, "Someone")) for i, name in enumerate(names)),
+    )
+
+
+def _patch_sheet(monkeypatch, table: SheetTable) -> None:
+    monkeypatch.setattr(
+        "app.services.sheet_groups_service.GoogleSheetsService.read_table",
+        lambda self, *args, **kwargs: table,
+    )
+
+
+def _register_groups_named(engine, *names: str) -> None:
+    with Session(engine) as session:
+        ids = session.execute(
+            select(SocialGroup.id).where(SocialGroup.name.in_(names))
+        ).scalars()
+        _created_groups.extend(str(group_id) for group_id in ids)
+
+
+def test_group_import_saves_sheet_and_member_groups(client, auth, monkeypatch, _engine):
+    stamp = uuid4().hex[:8]
+    sheet_group = f"Sheet Group {stamp}"
+    member_group = f"Member Group {stamp}"
+    _patch_sheet(monkeypatch, _group_rows(sheet_group, "NA", "No", ","))
+
+    # Keep the test hermetic: read only this member's group name rather than
+    # every member in the shared database.
+    async def _fake_member_names(_session):
+        return [member_group]
+
+    monkeypatch.setattr(
+        "app.services.sheet_groups_service._member_group_names", _fake_member_names
+    )
+
+    member = _create_member(client, auth, full_name="Group Link Target")
+    with Session(_engine) as session:
+        row = session.get(Member, member["id"])
+        row.profile_data = {
+            **(row.profile_data or {}),
+            "social_group_name": member_group,
+        }
+        session.commit()
+
+    response = client.post(
+        "/api/registration/sync-google-sheet-groups", json={}, headers=auth
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    _register_groups_named(_engine, sheet_group, member_group)
+
+    assert sheet_group in data["created"]
+    assert member_group in data["created"]
+    # "NA" is a placeholder, "No" a yes/no answer and "," has no letters/digits
+    # - none of them is a group.
+    assert "," in data["skipped"]
+    assert "No" in data["skipped"]
+    assert data["members_linked"] >= 1
+
+    with Session(_engine) as session:
+        group = session.execute(
+            select(SocialGroup).where(SocialGroup.name == member_group)
+        ).scalar_one()
+        linked = session.get(Member, member["id"])
+        assert linked.group_id == group.id
+
+
+def test_group_import_is_idempotent(client, auth, monkeypatch, _engine):
+    stamp = uuid4().hex[:8]
+    name = f"Idem Group {stamp}"
+    _patch_sheet(monkeypatch, _group_rows(name))
+
+    first = client.post(
+        "/api/registration/sync-google-sheet-groups",
+        json={"include_member_data": False, "link_members": False},
+        headers=auth,
+    )
+    assert first.status_code == 200, first.text
+    assert name in first.json()["data"]["created"]
+
+    second = client.post(
+        "/api/registration/sync-google-sheet-groups",
+        json={"include_member_data": False, "link_members": False},
+        headers=auth,
+    )
+    assert second.status_code == 200, second.text
+    assert name in second.json()["data"]["existing"]
+    assert name not in second.json()["data"]["created"]
+
+    _register_groups_named(_engine, name)
+    with Session(_engine) as session:
+        count = session.execute(
+            select(func.count())
+            .select_from(SocialGroup)
+            .where(SocialGroup.name == name, SocialGroup.is_deleted.is_(False))
+        ).scalar_one()
+        assert count == 1
+
+
+# --- hard delete ------------------------------------------------------------
+
+
+def test_delete_group_removes_the_row(client, auth, _engine):
+    group = _create_group(client, auth, f"Delete Me {uuid4().hex[:8]}")
+    response = client.delete(f"/api/v1/groups/{group['id']}", headers=auth)
+    assert response.status_code == 200, response.text
+    with Session(_engine) as session:
+        assert session.get(SocialGroup, group["id"]) is None
+
+
+def test_delete_group_blocks_live_dependents_then_force_unlinks(client, auth, _engine):
+    group = _create_group(client, auth, f"Block Me {uuid4().hex[:8]}")
+    with Session(_engine) as session:
+        news = News(group_id=group["id"], title="Dependent News", status="PUBLISHED")
+        session.add(news)
+        session.commit()
+        news_id = news.id
+
+    blocked = client.delete(f"/api/v1/groups/{group['id']}", headers=auth)
+    assert blocked.status_code == 409, blocked.text
+    assert "news" in blocked.text
+
+    forced = client.delete(
+        f"/api/v1/groups/{group['id']}", params={"force": "true"}, headers=auth
+    )
+    assert forced.status_code == 200, forced.text
+    with Session(_engine) as session:
+        assert session.get(SocialGroup, group["id"]) is None
+        surviving_news = session.get(News, news_id)
+        # The article survives the group; it is only unlinked.
+        assert surviving_news is not None
+        assert surviving_news.group_id is None
+        session.delete(surviving_news)
+        session.commit()
+
