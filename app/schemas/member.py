@@ -167,6 +167,10 @@ class MemberOut(BaseModel):
     id: UUID
     user_id: UUID | None = None
     group_id: UUID | None = None
+    # The linked group's name (``group_id`` -> ``social_groups.name``), so a
+    # client can render the group without a second request. Distinct from the
+    # free-text ``social_group_name`` profile field the sheet import fills in.
+    group_name: str | None = None
     location_id: UUID | None = None
     first_name: str
     middle_name: str | None = None

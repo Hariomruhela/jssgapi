@@ -249,9 +249,7 @@ def test_members_list_search_applies_the_group_name_filter(
     assert _ids(response.json()) == [member_id]
 
 
-def test_members_social_groups_lists_distinct_names(
-    client: TestClient, auth: dict
-):
+def test_members_social_groups_lists_distinct_names(client: TestClient, auth: dict):
     group_name = f"Distinct Group {str(time.time_ns())[-6:]}"
     _create_member_in_group(client, auth, group_name)
 
@@ -266,9 +264,7 @@ def test_members_social_groups_lists_distinct_names(
     assert names == sorted(names, key=str.casefold)
 
 
-def test_members_social_groups_collapses_case_variants(
-    client: TestClient, auth: dict
-):
+def test_members_social_groups_collapses_case_variants(client: TestClient, auth: dict):
     """Free-text names that differ only by case/padding are one group.
 
     The panel's group directory lists these names directly, so returning
@@ -284,3 +280,38 @@ def test_members_social_groups_collapses_case_variants(
     names = response.json()["data"]
     matches = [name for name in names if name.casefold() == stem.casefold()]
     assert len(matches) == 1, matches
+
+
+def test_members_list_includes_group_name(client: TestClient, auth: dict):
+    """``group_name`` must accompany ``group_id`` in the member payload.
+
+    The panel shows the group a member belongs to; without the name it would
+    have to resolve every ``group_id`` with a second request.
+    """
+    group_name = f"Linked Group {str(time.time_ns())[-6:]}"
+    group = client.post("/api/v1/groups", json={"name": group_name}, headers=auth)
+    assert group.status_code in (200, 201), group.text
+    group_id = group.json()["data"]["id"]
+
+    created = client.post(
+        "/api/v1/members",
+        json={
+            "full_name": "Group Name Member",
+            "mobile_number": _next_phone(),
+            "group_id": group_id,
+        },
+        headers=auth,
+    )
+    assert created.status_code in (200, 201), created.text
+    member = created.json()["data"]
+    assert member["group_id"] == group_id
+    assert member["group_name"] == group_name
+
+    listing = client.get(
+        "/api/v1/members",
+        params={"group_id": group_id, "page_size": 100},
+        headers=auth,
+    )
+    assert listing.status_code == 200, listing.text
+    item = next(i for i in listing.json()["data"] if i["id"] == member["id"])
+    assert item["group_name"] == group_name

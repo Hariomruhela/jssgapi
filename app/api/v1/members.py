@@ -48,9 +48,24 @@ DELETE = Depends(require_permission(Permission.MEMBER_DELETE))
 APPROVE = Depends(require_permission(Permission.MEMBER_APPROVE))
 
 
+def _member_out(member: Member) -> MemberOut:
+    """The member record plus the linked group's name.
+
+    ``group_name`` is derived from ``group_id`` (the admin-panel group). A
+    soft-deleted group is treated as absent so the name never outlives the
+    group. ``member.group`` must be eager loaded by the caller.
+    """
+    out = MemberOut.model_validate(member)
+    group = member.group
+    if group is not None and group.is_deleted:
+        group = None
+    out.group_name = group.name if group else None
+    return out
+
+
 def _member_list_item(member: Member, profiles: ProfileService) -> MemberListItemOut:
     return MemberListItemOut(
-        **MemberOut.model_validate(member).model_dump(),
+        **_member_out(member).model_dump(),
         **profiles.build_profile(member).model_dump(),
     )
 
@@ -233,7 +248,9 @@ async def list_social_group_names(db: DBSession, current_user: CurrentUser):
 
     profile_names = (
         await db.execute(
-            select(func.distinct(Member.profile_data["social_group_name"].astext)).where(
+            select(
+                func.distinct(Member.profile_data["social_group_name"].astext)
+            ).where(
                 *conditions,
                 Member.profile_data["social_group_name"].astext.isnot(None),
                 Member.profile_data["social_group_name"].astext != "",
@@ -332,7 +349,7 @@ async def update_member(
     return ok(
         "Member updated successfully",
         MemberListItemOut(
-            **MemberOut.model_validate(member).model_dump(),
+            **_member_out(member).model_dump(),
             **profiles.build_profile(member).model_dump(),
         ),
     )
@@ -481,10 +498,10 @@ async def approve_member(
             action, user_id=current_user.id, entity_type="member", entity_id=member.id
         )
         await db.flush()
-        await db.refresh(member)
     else:
         raise BadRequestException("Use update endpoint for status changes")
-    return ok("Member status updated successfully", MemberOut.model_validate(member))
+    member = await _reload_member(db, member.id)
+    return ok("Member status updated successfully", _member_out(member))
 
 
 @router.delete("/{member_id}", dependencies=[DELETE])
