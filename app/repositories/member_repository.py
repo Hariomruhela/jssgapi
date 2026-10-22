@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 from app.models.group import SocialGroup
 from app.models.location import Location
 from app.models.member import Member
+from app.models.professional import ProfessionalInformation
 from app.repositories.base_repository import BaseRepository
 from app.utils.helpers import is_valid_uuid
 
@@ -46,6 +47,53 @@ def group_name_filter(group_name: str):
         .exists()
     )
     return or_(profile_name == needle, and_(Member.group_id.is_not(None), linked_group))
+
+
+#: The characters trimmed off a stored designation. ``btrim`` only strips
+#: spaces by default, so the whitespace a sheet import may leave behind is
+#: listed explicitly.
+_TRIM_CHARS = " \t\n\r"
+
+
+def designation_filter(designation: str | None = None):
+    """Members that carry a group designation, optionally a specific one.
+
+    A trustee is a community member whose group designation is filled in, so
+    this filter is what separates the trustee listing from the member listing.
+    The designation is kept in ``members.profile_data`` and mirrored into
+    ``professional_information.designation``; either store may hold it, so both
+    are read. A blank value (``null``, ``""`` or whitespace only) means the
+    member has no designation and is therefore not a trustee.
+    """
+    stored = func.btrim(Member.profile_data["group_designation"].astext, _TRIM_CHARS)
+    mirrored = (
+        select(ProfessionalInformation.member_id)
+        .where(
+            ProfessionalInformation.member_id == Member.id,
+            func.btrim(ProfessionalInformation.designation, _TRIM_CHARS) != "",
+        )
+        .exists()
+    )
+    condition = or_(stored != "", mirrored)
+    needle = (designation or "").strip()
+    if not needle:
+        return condition
+    # The designation is free text, so the match is case-insensitive and the
+    # padded stored value is trimmed on both sides before comparing.
+    return and_(
+        condition,
+        or_(
+            func.lower(stored) == needle.casefold(),
+            Member.id.in_(
+                select(ProfessionalInformation.member_id).where(
+                    func.lower(
+                        func.btrim(ProfessionalInformation.designation, _TRIM_CHARS)
+                    )
+                    == needle.casefold()
+                )
+            ),
+        ),
+    )
 
 
 class MemberRepository(BaseRepository[Member]):
@@ -93,6 +141,8 @@ class MemberRepository(BaseRepository[Member]):
         group_id=None,
         membership_status: str | None = None,
         group_name: str | None = None,
+        designation: str | None = None,
+        trustee_only: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Member]:
@@ -119,6 +169,10 @@ class MemberRepository(BaseRepository[Member]):
             stmt = stmt.where(Member.membership_status == membership_status)
         if group_name:
             stmt = stmt.where(group_name_filter(group_name))
+        if trustee_only or (designation or "").strip():
+            stmt = stmt.where(
+                designation_filter(designation if (designation or "").strip() else None)
+            )
         result = await self.session.execute(
             stmt.order_by(Member.first_name).limit(limit).offset(offset)
         )

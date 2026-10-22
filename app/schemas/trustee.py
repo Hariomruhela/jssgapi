@@ -62,3 +62,33 @@ class TrusteeOut(BaseModel):
     sort_order: int
     created_at: datetime
     updated_at: datetime
+
+
+class MemberTrusteeOut(BaseModel):
+    """A trustee of the directory, derived from a member's group designation.
+
+    A trustee is not a second record: it is the member whose group designation
+    is filled in. The member's own id is therefore the id of this item, and
+    ``member_id`` repeats it so a client can treat the trustee as a member
+    without a second lookup.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    member_id: UUID
+    group_id: UUID | None = None
+    group_name: str | None = None
+    first_name: str
+    last_name: str
+    full_name: str
+    designation: str
+    contact_email: str | None = None
+    contact_phone: str | None = None
+    profile_photo_url: str | None = None
+    city: str | None = None
+    membership_status: str
+    membership_number: str | None = None
+    joined_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime

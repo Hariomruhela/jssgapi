@@ -11,11 +11,12 @@ Re-downloads everything the seed files are built from and regenerates them:
   each ULB gets its primary district (most villages; ties -> lowest code).
 
 Group-ID codes are never renumbered: ``city_code`` values already present in
-``data/geo/cities.csv`` are kept for their LGD codes, the pinned legacy values
-(``MP09`` Indore, ``MH15`` Nashik) are forced, and only *new* ULBs receive the
-next free code in their state. Files are written to a scratch directory,
-validated there (prefix collisions abort before anything is published), and
-only then copied into the output directory.
+``data/geo/cities.csv`` are kept for their LGD codes, the required codes
+(``MP04`` Bhopal, ``MP13`` Ujjain, ``MP09`` Indore, ``MH15`` Nashik) and the
+re-homed ones (``MP414`` Churhat, ``MP415`` Sheopur) are forced, and only
+*new* ULBs receive the next free code in their state. Files are written to a
+scratch directory, validated there (prefix collisions abort before anything is
+published), and only then copied into the output directory.
 
 Run from the project root:
 
@@ -48,6 +49,7 @@ import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from app.core.city_codes import REHOMED_CITY_CODES, REQUIRED_CITY_CODES
 from app.services.geo_service import DATA_DIR, validate_geo_files
 
 STATES_URL = "https://india-lgd-index-api.vercel.app/v1/states"
@@ -58,8 +60,11 @@ ARCHIVE_BASE = (
 ULB_ARCHIVE_URL = f"{ARCHIVE_BASE}/urban_local_bodies.Sep2026.7z"
 COVERAGE_ARCHIVE_URL = f"{ARCHIVE_BASE}/statewise_ulbs_coverage.Sep2026.7z"
 
-#: Legacy Group-ID codes that must never move (issued before this tool existed).
-PINNED_CITY_CODES = {250901: "09", 251442: "15"}  # Indore, Nashik
+#: Group-ID codes that must never move: the required mapping (Bhopal ``04``,
+#: Ujjain ``13``, Indore ``09``, Nashik ``15``) and the cities that were
+#: re-homed when a required code was taken over (Churhat ``414``, Sheopur
+#: ``415``). Both live in ``app.core.city_codes``.
+PINNED_CITY_CODES = {**REQUIRED_CITY_CODES, **REHOMED_CITY_CODES}
 
 #: Canonical LGD state name -> internal two-letter prefix. Extend this table
 #: only when LGD adds a State/UT; existing mappings are never rewritten.

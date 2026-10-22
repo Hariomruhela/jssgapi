@@ -25,6 +25,7 @@ from app.models.member import Member
 from app.repositories.member_repository import (
     MEMBER_PROFILE_LOADS,
     MemberRepository,
+    designation_filter,
     group_name_filter,
 )
 from app.schemas.member import (
@@ -123,6 +124,18 @@ async def list_members(
     group_name: str | None = Query(default=None, max_length=100),
     status: str | None = Query(default=None),
     query: str | None = Query(default=None, max_length=200),
+    trustee_only: bool = Query(
+        default=False,
+        description="Only the members that carry a group designation, i.e. the "
+        "trustees. A blank designation (null, empty or whitespace) never "
+        "counts as one.",
+    ),
+    designation: str | None = Query(
+        default=None,
+        max_length=255,
+        description="Only the members holding this exact group designation "
+        "(case-insensitive).",
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
@@ -155,6 +168,8 @@ async def list_members(
             group_id=effective_group,
             membership_status=status,
             group_name=group_name,
+            designation=designation if (designation or "").strip() else None,
+            trustee_only=trustee_only,
             limit=page_size,
             offset=(page - 1) * page_size,
         )
@@ -181,6 +196,12 @@ async def list_members(
     )
     if group_name:
         stmt = stmt.where(group_name_filter(group_name))
+    # The trustee listing is the member listing narrowed to the members that
+    # carry a designation, so the two never drift apart.
+    if trustee_only or (designation or "").strip():
+        stmt = stmt.where(
+            designation_filter(designation if (designation or "").strip() else None)
+        )
     if scope.member_id is not None and scope.group_id is None:
         stmt = stmt.where(Member.id == scope.member_id)
     total = (

@@ -32,7 +32,7 @@ lgd_code,name,state_lgd_code,district_lgd_code,district_name,ulb_type_code,censu
 248065,Sidhi,23,433,Sidhi,5,802424,01
 248066,Singrauli,23,638,Singrauli,4,802426,02
 248067,Rampur Naikin,23,433,Sidhi,7,802422,03
-248068,Churhat,23,433,Sidhi,7,802423,04
+248068,Churhat,23,433,Sidhi,7,802423,414
 248069,Sarni,23,394,Betul,5,802338,05
 248070,Betul Bazar,23,394,Betul,7,802336,06
 248071,Multai,23,394,Betul,5,802339,07
@@ -1828,7 +1828,7 @@ lgd_code,name,state_lgd_code,district_lgd_code,district_name,ulb_type_code,censu
 250670,Bade Bacheli,22,376,Dakshin Bastar Dantewada,5,802068,87
 250671,Kirandul,22,376,Dakshin Bastar Dantewada,5,802071,88
 250672,Vijaypur,23,431,Sheopur,7,802078,12
-250673,Sheopur,23,431,Sheopur,5,802079,13
+250673,Sheopur,23,431,Sheopur,5,802079,415
 250674,Badoda,23,431,Sheopur,7,802080,14
 250675,Ambah,23,417,Morena,5,802081,15
 250676,Porsa,23,417,Morena,5,802082,16
@@ -1976,7 +1976,7 @@ lgd_code,name,state_lgd_code,district_lgd_code,district_name,ulb_type_code,censu
 250847,Unhel,23,435,Ujjain,7,802226,158
 250849,Mahidpur,23,435,Ujjain,5,802227,159
 250850,Tarana,23,435,Ujjain,7,802228,160
-250851,Ujjain,23,435,Ujjain,4,802230,161
+250851,Ujjain,23,435,Ujjain,4,802230,13
 250852,Badnagar,23,435,Ujjain,5,802231,162
 250853,Soyatkalan,23,667,Agar-Malwa,7,802232,163
 250854,Susner,23,667,Agar-Malwa,7,802233,164
@@ -2063,7 +2063,7 @@ lgd_code,name,state_lgd_code,district_lgd_code,district_name,ulb_type_code,censu
 250942,Kurwai,23,437,Vidisha,7,802307,244
 250944,Vidisha,23,437,Vidisha,5,802310,245
 250945,Berasia,23,396,Bhopal,5,802311,246
-250946,Bhopal,23,396,Bhopal,4,802312,247
+250946,Bhopal,23,396,Bhopal,4,802312,04
 250947,Sehore,23,427,Sehore,5,802314,248
 250948,Jawar,23,427,Sehore,7,802317,249
 250949,Ashta,23,427,Sehore,5,802315,250

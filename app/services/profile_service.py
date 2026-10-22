@@ -98,6 +98,18 @@ def _as_string(value: Any) -> str | None:
     return str(value)
 
 
+def is_trustee_designation(value: str | None) -> bool:
+    """Whether a group designation makes a member a trustee.
+
+    A trustee is a community member whose ``group_designation`` carries a
+    designation: ``null``, an empty string and a blank string all mean "no
+    designation", so a member without one never shows up in the trustee
+    listing. The stored value is trimmed before the test, because sheet imports
+    and free-text edits keep their padding.
+    """
+    return bool(value and value.strip())
+
+
 def _normalize_values(values: dict[str, Any]) -> dict[str, str | None]:
     """Store profile values as strings, with both names of a shared slot set.
 

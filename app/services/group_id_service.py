@@ -1,15 +1,17 @@
 """Group ID generation backed by the geo master data.
 
-A Group ID is ``STATE_CODE + CITY_CODE + SEQUENCE`` - ``MP09001`` is the first
-group created in Indore, Madhya Pradesh; ``MH15002`` is the second in Nashik,
+A Group ID is ``STATE_CODE + CITY_CODE + SEQUENCE`` - ``MP04001`` is the first
+group created in Bhopal, Madhya Pradesh; ``MH15002`` is the second in Nashik,
 Maharashtra:
 
 * **state code** - the project's two-letter prefix for the State/UT
   (``geo_states.code``, e.g. ``MP``, ``MH``);
 * **city code** - the explicit, deterministic code assigned to the city in
-  ``geo_cities.city_code`` (``09`` for Indore, ``15`` for Nashik). Codes come
-  from the checked-in LGD seed data (``data/geo/cities.csv``), are never
-  derived from city names, and never change once assigned;
+  ``geo_cities.city_code`` (``04`` for Bhopal, ``09`` for Indore, ``13`` for
+  Ujjain, ``15`` for Nashik). The codes are *assigned*, never derived: they
+  come from the checked-in mapping (``app.core.city_codes`` and the LGD seed
+  data in ``data/geo/cities.csv``), not from a row id, a name or a position in
+  a list, and they never change once assigned;
 * **sequence** - minimum three digits, zero padded, **per city**, so every
   city counts from ``001`` for itself. Past ``999`` the number simply grows
   (``MP091000``) - it is never truncated, reused or wrapped.
@@ -18,7 +20,10 @@ The sequence is a row in ``group_id_counters`` advanced by an atomic
 ``INSERT ... ON CONFLICT DO UPDATE ... RETURNING``: PostgreSQL serializes
 concurrent allocations through the primary key, so two simultaneous creates can
 never receive the same number and a restart cannot reset the count. It is never
-``COUNT(*) + 1`` and never held in process memory.
+``COUNT(*) + 1`` and never held in process memory. Before the number is
+claimed the counter is raised to the highest sequence the city's rows already
+carry, so a counter that lags behind the stored IDs (a restored database, a
+corrected city code) can never hand out a number that is already taken.
 
 Only cities present in ``geo_cities`` (seeded by
 ``scripts/import_geo_data.py`` from LGD data) can be created through
@@ -44,12 +49,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictException, ValidationException
+from app.core.rto_codes import get_rto_code
 from app.models.geo import GeoCity, GeoState
 from app.models.group import GroupIdCounter, MemberIdCounter, SocialGroup
 
@@ -170,6 +176,17 @@ async def resolve_city(
 
     if len(matches) == 1:
         only = matches[0]
+        # Prefer RTO code mapping: STATE + RTO_CODE(2 digits) + SEQ(3 digits)
+        rto_code = get_rto_code(state_row.code, only.name) or get_rto_code(
+            state_row.code, city
+        )
+        if rto_code:
+            return CityCode(
+                state=state_row.name,
+                state_code=state_row.code,
+                city=only.name,
+                city_code=rto_code,
+            )
         return CityCode(
             state=state_row.name,
             state_code=state_row.code,
@@ -207,17 +224,68 @@ async def resolve_city(
     )
 
 
-async def next_sequence(session: AsyncSession, prefix: str) -> int:
-    """Atomically claim the next sequence number for a city prefix.
+async def _highest_stored_sequence(session: AsyncSession, city: CityCode) -> int:
+    """The highest sequence already stored for a city, ``0`` when it has none.
+
+    Only the rows of *this* city count: the ID's prefix is matched and the
+    canonical state/city names have to agree, so a longer prefix of another
+    city (``MP247`` against ``MP24``) can never be mistaken for this one's
+    sequence.
+    """
+    remainder = func.substring(SocialGroup.group_id, len(city.prefix) + 1)
+    result = await session.execute(
+        select(func.max(cast(remainder, Integer))).where(
+            SocialGroup.group_id.like(f"{city.prefix}%"),
+            SocialGroup.state == city.state,
+            SocialGroup.city == city.city,
+            remainder.op("~")("^[0-9]+$"),
+        )
+    )
+    return int(result.scalar() or 0)
+
+
+async def _raise_counter_to_stored_highest(
+    session: AsyncSession, city: CityCode
+) -> None:
+    """Never let the counter fall behind the IDs the city already carries.
+
+    The counter is the primary source of truth, but it can lag behind the
+    stored rows - a database restored from a backup, a city whose code was
+    corrected, an ID written by hand. Raising the counter to the highest
+    sequence already stored keeps the next allocation unique without ever
+    lowering a counter (the number of a deleted group is never reissued).
+    """
+    highest = await _highest_stored_sequence(session, city)
+    if not highest:
+        return
+    await session.execute(
+        pg_insert(GroupIdCounter)
+        .values(city_key=city.prefix, last_value=highest)
+        .on_conflict_do_update(
+            index_elements=[GroupIdCounter.city_key],
+            set_={
+                "last_value": func.greatest(
+                    GroupIdCounter.last_value, highest
+                )
+            },
+        )
+    )
+
+
+async def next_sequence(session: AsyncSession, city: CityCode) -> int:
+    """Atomically claim the next sequence number for a city.
 
     ``ON CONFLICT ... DO UPDATE`` takes a row lock on the counter for the rest
     of the transaction, so concurrent creators in the same city line up instead
     of racing; a rolled-back request returns its number to the pool because the
-    increment rolls back with it.
+    increment rolls back with it. The counter is first raised to the highest
+    sequence the city already uses, so a number that is stored is never handed
+    out twice.
     """
+    await _raise_counter_to_stored_highest(session, city)
     statement = (
         pg_insert(GroupIdCounter)
-        .values(city_key=prefix, last_value=1)
+        .values(city_key=city.prefix, last_value=1)
         .on_conflict_do_update(
             index_elements=[GroupIdCounter.city_key],
             set_={"last_value": GroupIdCounter.last_value + 1},
@@ -228,8 +296,8 @@ async def next_sequence(session: AsyncSession, prefix: str) -> int:
 
 
 async def next_group_id(session: AsyncSession, city: CityCode) -> str:
-    """The next Group ID for a city, e.g. ``MP09001`` then ``MP09002``."""
-    return format_group_id(city.prefix, await next_sequence(session, city.prefix))
+    """The next Group ID for a city, e.g. ``MP04001`` then ``MP04002``."""
+    return format_group_id(city.prefix, await next_sequence(session, city))
 
 
 def format_group_id(prefix: str, sequence: int) -> str:

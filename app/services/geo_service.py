@@ -10,7 +10,8 @@ Guarantees:
   import updates descriptive columns in place and never duplicates a row.
 * **Prefix-stable** - the Group-ID ``city_code``/``prefix`` of a city that
   already exists in the database is *never* changed, so already-generated
-  Group IDs keep meaning the same city.
+  Group IDs keep meaning the same city. A city whose code was *corrected* is
+  fixed by the Alembic migration, not by the import.
 * **Collision-checked** - the whole file is validated before anything is
   written: duplicate LGD codes, duplicate ``(state, city_code)`` pairs and
   duplicate prefixes all abort the import with a clear error.
@@ -27,6 +28,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.city_codes import REQUIRED_CITY_CODES
 from app.models.geo import GeoCity, GeoDistrict, GeoState
 
 logger = logging.getLogger(__name__)
@@ -120,6 +122,23 @@ def _read_cities(
             raise ValueError(
                 f"City {row['name']!r} has invalid city_code {city_code!r}"
             )
+
+        # The required mapping (``app.core.city_codes``) is authoritative: the
+        # codes are assigned, never derived. A seed file that disagrees is
+        # corrected here, so the database always holds the required code.
+        required = REQUIRED_CITY_CODES.get(int(lgd))
+        if required is not None and required != city_code:
+            logger.warning(
+                "City %s (LGD %s) has city_code %s in the seed file; the required "
+                "mapping says %s. Using %s.",
+                row["name"],
+                lgd,
+                city_code,
+                required,
+                required,
+            )
+            city_code = required
+            row["city_code"] = city_code
 
         state_code = state_lgd_to_code[state_lgd]
         prefix = f"{state_code}{city_code}"
@@ -259,7 +278,8 @@ async def import_geo_data(
             if city.prefix != prefix:
                 logger.warning(
                     "City %s (LGD %s) already has prefix %s; seed file says %s. "
-                    "Keeping the existing prefix.",
+                    "Keeping the existing prefix - run 'alembic upgrade head' to "
+                    "apply a corrected code.",
                     name,
                     lgd,
                     city.prefix,
