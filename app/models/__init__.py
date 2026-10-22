@@ -4,8 +4,10 @@ from app.models.advertisement import Advertisement  # noqa: F401
 from app.models.audit_log import AuditLog  # noqa: F401
 from app.models.base import Base  # noqa: F401
 from app.models.event import Event  # noqa: F401
+from app.models.event_image import EventImage  # noqa: F401
 from app.models.family import FamilyMember  # noqa: F401
 from app.models.fee import Fee  # noqa: F401
+from app.models.geo import GeoCity, GeoDistrict, GeoState  # noqa: F401
 from app.models.group import SocialGroup  # noqa: F401
 from app.models.location import Location  # noqa: F401
 from app.models.media import Media, MediaObject  # noqa: F401

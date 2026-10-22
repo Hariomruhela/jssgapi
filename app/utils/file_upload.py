@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from app.core.exceptions import ValidationException
+from app.core.exceptions import BadRequestException, ValidationException
 
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg",
@@ -106,3 +106,69 @@ def sniff_image_type(content: bytes) -> str | None:
         if brand in _HEIC_BRANDS or brand in {b"mif1", b"msf1"}:
             return "image/heic"
     return None
+
+
+#: The extension each sniffed image type is stored under.
+MIME_SUFFIX: dict[str, str] = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/heic": ".heic",
+}
+
+
+def safe_file_name(file_name: str | None, fallback: str = "image") -> str:
+    """A file name with any client-supplied path stripped, capped at 255."""
+    raw_name = (file_name or fallback).replace("\\", "/")
+    name = Path(raw_name).name or fallback
+    if len(name) <= 255:
+        return name
+    suffix = Path(name).suffix
+    return f"{name[: 255 - len(suffix)]}{suffix}"
+
+
+def validate_image_upload(
+    file_name: str | None,
+    mime_type: str | None,
+    content: bytes,
+    *,
+    error_code: str = "INVALID_IMAGE",
+) -> tuple[str, str]:
+    """Check an image upload and return the ``(name, mime type)`` to store.
+
+    The bytes decide what the file is: the declared content type and the
+    extension are only checked for a declared image type that disagrees with
+    them, and the stored name always carries an extension the media layer
+    accepts.
+    """
+    if not content:
+        raise BadRequestException("Uploaded image is empty", error_code)
+    if len(content) > MAX_IMAGE_SIZE:
+        max_mb = MAX_IMAGE_SIZE // (1024 * 1024)
+        raise BadRequestException(
+            f"Image is larger than the {max_mb} MB limit", error_code
+        )
+
+    actual = sniff_image_type(content)
+    if actual is None:
+        raise BadRequestException(
+            "The uploaded file is not a valid image", error_code
+        )
+
+    name = safe_file_name(file_name)
+    suffix = Path(name).suffix.lower()
+    declared = (mime_type or "").split(";")[0].strip().lower()
+    if declared == "image/jpg":
+        declared = "image/jpeg"
+    # A client that sends no usable type (application/octet-stream, or nothing
+    # at all) is not wrong, it just left the guessing to us - but a client that
+    # names an image type and sends something else is.
+    if declared in ALLOWED_IMAGE_TYPES and declared != actual:
+        raise BadRequestException(
+            "The uploaded file is not a valid image", error_code
+        )
+
+    if suffix not in ALLOWED_EXTENSIONS["image"]:
+        name = f"{Path(name).stem or 'image'}{MIME_SUFFIX[actual]}"
+    return name, actual

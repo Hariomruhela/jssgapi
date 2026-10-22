@@ -289,7 +289,11 @@ def test_members_list_includes_group_name(client: TestClient, auth: dict):
     have to resolve every ``group_id`` with a second request.
     """
     group_name = f"Linked Group {str(time.time_ns())[-6:]}"
-    group = client.post("/api/v1/groups", json={"name": group_name}, headers=auth)
+    group = client.post(
+        "/api/v1/groups",
+        json={"name": group_name, "state": "Madhya Pradesh", "city": "Indore"},
+        headers=auth,
+    )
     assert group.status_code in (200, 201), group.text
     group_id = group.json()["data"]["id"]
 

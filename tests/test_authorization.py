@@ -257,7 +257,11 @@ def test_super_admin_is_platform_wide(client, world):
     for token in ("SUPER_ADMIN", "SUPER_ADMIN_2"):
         headers = _auth(world["tokens"][token])
         name = f"{token} Group {uuid.uuid4()}"
-        resp = client.post("/api/v1/groups", json={"name": name}, headers=headers)
+        resp = client.post(
+            "/api/v1/groups",
+            json={"name": name, "state": "Madhya Pradesh", "city": "Indore"},
+            headers=headers,
+        )
         assert resp.status_code in (200, 201), resp.text
 
         resp = client.get("/api/v1/users", headers=headers)
@@ -894,16 +898,19 @@ def test_group_create_collapses_case_variant_names(client, world):
     engine = world["engine"]
     headers = _auth(world["tokens"]["SUPER_ADMIN"])
     stem = f"Case Group {uuid.uuid4().hex[:8]}"
+    place = {"state": "Madhya Pradesh", "city": "Indore"}
 
     first = client.post(
-        "/api/v1/groups", json={"name": stem.upper()}, headers=headers
+        "/api/v1/groups", json={"name": stem.upper(), **place}, headers=headers
     )
     assert first.status_code in (200, 201), first.text
     first_id = first.json()["data"]["id"]
 
     # Case and padding differences resolve to the same group.
     second = client.post(
-        "/api/v1/groups", json={"name": f"  {stem.lower()}  "}, headers=headers
+        "/api/v1/groups",
+        json={"name": f"  {stem.lower()}  ", **place},
+        headers=headers,
     )
     assert second.status_code in (200, 201), second.text
     assert second.json()["data"]["id"] == first_id
@@ -918,7 +925,9 @@ def test_group_create_collapses_case_variant_names(client, world):
 
         # A genuinely different name is not folded in.
         other = client.post(
-            "/api/v1/groups", json={"name": f"{stem} group"}, headers=headers
+            "/api/v1/groups",
+            json={"name": f"{stem} group", **place},
+            headers=headers,
         )
         assert other.status_code in (200, 201), other.text
         assert other.json()["data"]["id"] != first_id

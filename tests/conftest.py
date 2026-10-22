@@ -17,6 +17,11 @@ This module makes that impossible:
 ``DATABASE_URL`` is exported before any ``app`` module is imported, which is what
 matters: ``app.database`` builds its engine at import time from the settings, and
 ``pydantic-settings`` gives environment variables precedence over ``.env``.
+
+The database is dropped *and recreated* at the start of every session as well as
+at the end: a run that was killed halfway (timeout, Ctrl-C) can never execute the
+end-of-session drop, and stale rows from it would otherwise break tests that
+assume empty tables on the next run.
 """
 
 from __future__ import annotations
@@ -102,17 +107,23 @@ async def _create_test_database() -> None:
         exists = await connection.fetchval(
             "SELECT 1 FROM pg_database WHERE datname = $1", TEST_DATABASE_NAME
         )
-        if not exists:
-            try:
-                await connection.execute(f'CREATE DATABASE "{TEST_DATABASE_NAME}"')
-            except asyncpg.InsufficientPrivilegeError as exc:
-                role = urlsplit(TEST_DATABASE_URL).username or "jssg"
-                raise RuntimeError(
-                    f"Cannot create the test database {TEST_DATABASE_NAME!r}: the role "
-                    f"{role!r} lacks CREATEDB. Grant it once as a superuser with "
-                    f"'ALTER ROLE {role} CREATEDB;', or pre-create the database with "
-                    f"'CREATE DATABASE {TEST_DATABASE_NAME} OWNER {role};'."
-                ) from exc
+        if exists:
+            # A killed run (timeout, Ctrl-C) never reaches the end-of-session
+            # drop, and its leftover rows silently break tests that assume an
+            # empty table. Every session therefore starts from a clean slate.
+            await connection.execute(
+                f'DROP DATABASE IF EXISTS "{TEST_DATABASE_NAME}" WITH (FORCE)'
+            )
+        try:
+            await connection.execute(f'CREATE DATABASE "{TEST_DATABASE_NAME}"')
+        except asyncpg.InsufficientPrivilegeError as exc:
+            role = urlsplit(TEST_DATABASE_URL).username or "jssg"
+            raise RuntimeError(
+                f"Cannot create the test database {TEST_DATABASE_NAME!r}: the role "
+                f"{role!r} lacks CREATEDB. Grant it once as a superuser with "
+                f"'ALTER ROLE {role} CREATEDB;', or pre-create the database with "
+                f"'CREATE DATABASE {TEST_DATABASE_NAME} OWNER {role};'."
+            ) from exc
     finally:
         await connection.close()
 
@@ -122,7 +133,9 @@ async def _drop_test_database() -> None:
 
     connection = await asyncpg.connect(_asyncpg_dsn(TEST_DATABASE_URL, MAINTENANCE_DB))
     try:
-        await connection.execute(f'DROP DATABASE IF EXISTS "{TEST_DATABASE_NAME}" WITH (FORCE)')
+        await connection.execute(
+            f'DROP DATABASE IF EXISTS "{TEST_DATABASE_NAME}" WITH (FORCE)'
+        )
     finally:
         await connection.close()
 

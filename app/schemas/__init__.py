@@ -14,7 +14,13 @@ from app.schemas.auth import (  # noqa: F401
     RefreshRequest,
     RegisterRequest,
 )
-from app.schemas.event import EventCreate, EventOut, EventUpdate  # noqa: F401
+from app.schemas.event import (  # noqa: F401
+    EventCreate,
+    EventDetailOut,
+    EventImageOut,
+    EventOut,
+    EventUpdate,
+)
 from app.schemas.family import (  # noqa: F401
     FamilyMemberCreate,
     FamilyMemberOut,
@@ -62,6 +68,12 @@ from app.schemas.professional import (  # noqa: F401
     ProfessionalInfoCreate,
     ProfessionalInfoOut,
     ProfessionalInfoUpdate,
+)
+from app.schemas.search import (  # noqa: F401
+    GroupSearchItemOut,
+    SearchData,
+    SearchPagination,
+    SearchQuery,
 )
 from app.schemas.trustee import TrusteeCreate, TrusteeOut, TrusteeUpdate  # noqa: F401
 from app.schemas.user import (  # noqa: F401

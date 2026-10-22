@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.constants import AuditAction, RoleName, resolve_role_name
 from app.core.exceptions import (
@@ -38,9 +39,13 @@ from app.schemas.group import (
     SocialGroupUpdate,
 )
 from app.services.audit_service import AuditService
+from app.services.group_id_service import assign_member_id, next_group_id, resolve_city
 from app.services.sheet_groups_service import read_sheet_groups
 
 router = APIRouter(prefix="/groups", tags=["Groups"])
+
+#: Unique constraint backing ``SocialGroup.group_id`` (see the model/migration).
+UNIQUE_GROUP_ID = "uq_social_groups_group_id"
 
 READ = Depends(require_permission(Permission.GROUP_READ))
 CREATE = Depends(require_permission(Permission.GROUP_CREATE))
@@ -155,15 +160,54 @@ async def list_groups(
 
 @router.post("", dependencies=[CREATE])
 async def create_group(body: SocialGroupCreate, db: DBSession):
+    """Create a group, generating its Group ID on the backend.
+
+    ``state``/``city`` must be a configured pair (422 otherwise); the ID is
+    ``STATE_CODE + CITY_CODE + SEQUENCE`` for that city - ``MP09001`` for the
+    first Indore group. The counter, the ID and the row are written in one
+    transaction, and a client-sent ``group_id`` is ignored. An unchanged name
+    still returns the existing group instead of a duplicate.
+    """
     repo = GroupRepository(db)
+    city = await resolve_city(db, body.state, body.city)
     existing = await repo.get_by_name(body.name)
     if existing:
         return created(
             "Group created successfully", SocialGroupOut.model_validate(existing)
         )
-    group = await repo.create(**body.model_dump())
-    await db.flush()
+    # ``group_id`` is dropped from the payload: the server owns the ID.
+    values = body.model_dump(exclude={"group_id"})
+    values["state"] = city.state
+    values["city"] = city.city
+    try:
+        values["group_id"] = await next_group_id(db, city)
+        group = await repo.create(**values)
+        await db.flush()
+    except IntegrityError as exc:
+        # The unique index on group_id is the backstop behind the counter: if
+        # it ever fires (hand-inserted duplicate, mis-seeded counter) the whole
+        # transaction - the claimed sequence included - is rolled back and the
+        # caller gets a conflict rather than a duplicate ID.
+        await db.rollback()
+        if _is_group_id_violation(exc):
+            raise ConflictException(
+                "Could not allocate a unique Group ID for this city; "
+                "retry the request."
+            ) from exc
+        raise
     return created("Group created successfully", SocialGroupOut.model_validate(group))
+
+
+def _is_group_id_violation(exc: IntegrityError) -> bool:
+    """True when the unique constraint on ``social_groups.group_id`` fired.
+
+    asyncpg exposes the constraint name on the driver error, but SQLAlchemy's
+    translated ``IntegrityError`` may carry a wrapper instead - so the message
+    is checked as well. Matching on the name keeps a violation of some *other*
+    constraint (or a NOT NULL slip) on its usual path.
+    """
+    constraint = getattr(getattr(exc, "orig", None), "constraint_name", None)
+    return constraint == UNIQUE_GROUP_ID or UNIQUE_GROUP_ID in str(exc)
 
 
 @router.get("/{group_id}", dependencies=[READ])
@@ -351,6 +395,9 @@ async def add_group_member(
             )
 
     if member.group_id == group_id:
+        # Still mint a member ID if the row predates member IDs (sheet/directory
+        # imports) or was created without a group - first touch backfills it.
+        await assign_member_id(db, member, group)
         return ok("Member is already in this group", _group_member_out(member))
     # A scoped caller may only take a member that belongs to another group. An
     # unassigned member (group_id IS NULL) is fair game, but moving someone out of
@@ -359,6 +406,10 @@ async def add_group_member(
     if scope is not None and member.group_id is not None and member.group_id != scope:
         raise ForbiddenException("Operation is limited to your own group")
     member.group_id = group_id
+    # Entering a new group always issues a member ID from that group's counter
+    # (``MH15002`` -> ``MH15002001``); the number from the previous group is
+    # history and is never reused or carried over.
+    await assign_member_id(db, member, group)
     await db.flush()
     await db.refresh(member)
     await AuditService(db).log(

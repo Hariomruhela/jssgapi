@@ -217,7 +217,13 @@ def _create_member(client: TestClient, auth: dict, **overrides) -> dict:
 
 
 def _create_group(client: TestClient, auth: dict, name: str) -> dict:
-    response = client.post("/api/v1/groups", json={"name": name}, headers=auth)
+    # state/city are mandatory for POST /groups; Indore is the registry's
+    # configured city so the backend can mint a Group ID (MP09xxx).
+    response = client.post(
+        "/api/v1/groups",
+        json={"name": name, "state": "Madhya Pradesh", "city": "Indore"},
+        headers=auth,
+    )
     assert response.status_code in (200, 201), response.text
     group = response.json()["data"]
     _created_groups.append(group["id"])

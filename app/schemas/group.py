@@ -3,10 +3,19 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class SocialGroupCreate(BaseModel):
+    """``POST /groups`` body.
+
+    ``state`` and ``city`` are mandatory and are validated against the backend's
+    LGD-sourced geo master data - they are what the generated Group ID
+    (``MP09001``) is built from. A client-sent ``group_id`` is accepted but
+    **ignored**: the server always generates the ID, so a stale or forged value
+    can never end up on the record.
+    """
+
     name: str
     name_hi: str | None = None
     description: str | None = None
@@ -17,9 +26,28 @@ class SocialGroupCreate(BaseModel):
     status: str = "ACTIVE"
     is_active: bool = True
     location_id: UUID | None = None
+    state: str
+    city: str
+    group_id: str | None = None
+
+    @field_validator("state", "city")
+    @classmethod
+    def _reject_blank(cls, value: str) -> str:
+        """Trim, then refuse missing/empty/whitespace-only values (422)."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be empty")
+        return stripped
 
 
 class SocialGroupUpdate(BaseModel):
+    """``PATCH /groups/{id}`` body.
+
+    Deliberately free of ``group_id``, ``state`` and ``city``: the generated ID
+    encodes the city a group was created in, so it survives every update
+    untouched rather than drifting out of sync with the record.
+    """
+
     name: str | None = None
     name_hi: str | None = None
     description: str | None = None
@@ -36,7 +64,10 @@ class SocialGroupOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    group_id: str | None = None
     name: str
+    state: str | None = None
+    city: str | None = None
     name_hi: str | None = None
     description: str | None = None
     contact_email: str | None = None

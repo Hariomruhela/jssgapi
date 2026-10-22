@@ -2,6 +2,7 @@ from app.repositories.advertisement_repository import (
     AdvertisementRepository,  # noqa: F401
 )
 from app.repositories.base_repository import BaseRepository  # noqa: F401
+from app.repositories.event_image_repository import EventImageRepository  # noqa: F401
 from app.repositories.event_repository import EventRepository  # noqa: F401
 from app.repositories.family_repository import FamilyMemberRepository  # noqa: F401
 from app.repositories.fee_repository import FeeRepository  # noqa: F401

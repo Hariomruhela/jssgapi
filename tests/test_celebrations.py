@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from datetime import date, timedelta
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,9 +20,15 @@ from sqlalchemy.pool import NullPool
 from app.config import get_settings
 from app.core.security import hash_password
 from app.main import app
+from app.models.member import Member
 from app.models.user import Role, User
 
 PASSWORD = "StrongPass123!"
+
+#: Every member this module creates; removed at module teardown so later
+#: modules (e.g. the Drive photo migration, which assumes an empty members
+#: table) never see them.
+_created_member_ids: list[str] = []
 
 
 def _psycopg_url() -> str:
@@ -94,7 +101,24 @@ def _create_member(client: TestClient, auth: dict, **fields) -> dict:
     }
     response = client.post("/api/v1/members", json=payload, headers=auth)
     assert response.status_code in (200, 201), response.text
-    return response.json()["data"]
+    member = response.json()["data"]
+    _created_member_ids.append(member["id"])
+    return member
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _cleanup_created_members():
+    yield
+    if not _created_member_ids:
+        return
+    engine = create_engine(_psycopg_url(), poolclass=NullPool)
+    try:
+        with Session(engine) as session:
+            member_ids = [UUID(member_id) for member_id in _created_member_ids]
+            session.execute(delete(Member).where(Member.id.in_(member_ids)))
+            session.commit()
+    finally:
+        engine.dispose()
 
 
 def _member_ids(items: list[dict]) -> set[str]:

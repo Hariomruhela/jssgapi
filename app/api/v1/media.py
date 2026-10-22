@@ -21,6 +21,7 @@ from app.dependencies import (
     OptionalUser,
     require_permission,
 )
+from app.models.event import Event
 from app.models.media import Media
 from app.models.member import Member
 from app.models.user import User
@@ -102,7 +103,7 @@ async def assert_owner_in_scope(
 ) -> None:
     """Refuse owner-based media browsing outside the caller's group.
 
-    Only the two owner types the platform actually creates are recognised; an
+    Only the owner types the platform actually creates are recognised; an
     unrecognised ``owner_type`` is refused rather than allowed through, since a
     scoped admin would otherwise be browsing an unenforced dimension.
     """
@@ -112,6 +113,10 @@ async def assert_owner_in_scope(
         )
     elif owner_type == "group":
         owner_group_id = owner_id if owner_id is not None else None
+    elif owner_type == "event":
+        owner_group_id = await db.scalar(
+            select(Event.group_id).where(Event.id == owner_id)
+        )
     else:
         raise ForbiddenException("This media owner type is not accessible")
 
@@ -166,6 +171,8 @@ async def scope_group_from_owner(
         return owner_id
     if owner_type == "member":
         return await db.scalar(select(Member.group_id).where(Member.id == owner_id))
+    if owner_type == "event":
+        return await db.scalar(select(Event.group_id).where(Event.id == owner_id))
     return None
 
 

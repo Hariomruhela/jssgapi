@@ -163,6 +163,12 @@ class Settings(BaseSettings):
     # available (e.g. background jobs). Leave empty to derive it per request.
     public_base_url: str = ""
 
+    # The timezone the platform's wall-clock times are expressed in. Event
+    # dates and times are stored as local wall-clock values; they are turned
+    # into instants (and back) through this zone, so every "today" and
+    # "within a week" judgement means the same thing for every reader.
+    app_timezone: str = "Asia/Kolkata"
+
     # Firebase
     firebase_project_id: str = FIREBASE_PROJECT_ID
     firebase_private_key: str = ""

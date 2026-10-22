@@ -35,6 +35,7 @@ from app.schemas.member import (
     MemberUpdate,
 )
 from app.services.audit_service import AuditService
+from app.services.group_id_service import assign_member_id
 from app.services.member_photo_service import SLOTS, MemberPhotoService
 from app.services.profile_service import ProfileService
 from app.utils.file_upload import MAX_IMAGE_SIZE
@@ -213,7 +214,17 @@ async def create_member(body: MemberCreate, current_user: CurrentUser, db: DBSes
     data["first_name"] = data.get("first_name") or first_name
     data["last_name"] = data.get("last_name") or last_name
     data["group_id"] = await resolve_managed_group(db, current_user, body.group_id)
+    if data["group_id"] is not None:
+        # The member ID is minted from the group's counter below; a client-sent
+        # value is never trusted once the member belongs to a group.
+        data.pop("membership_number", None)
     member = await repo.create(**data)
+    if data["group_id"] is not None:
+        group = await db.get(SocialGroup, data["group_id"])
+        if group is not None:
+            # Server-mints the member ID (``MP09001`` -> ``MP09001001``) for
+            # the group.
+            await assign_member_id(db, member, group)
     profiles = ProfileService(db)
     await profiles.apply_values(member, body.profile_values())
     await AuditService(db).log(

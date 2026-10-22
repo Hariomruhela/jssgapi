@@ -20,7 +20,6 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,10 +29,9 @@ from app.repositories.media_repository import MediaRepository
 from app.services.media_service import MediaService
 from app.services.media_storage import StorageBackend, get_storage
 from app.utils.file_upload import (
-    ALLOWED_EXTENSIONS,
-    ALLOWED_IMAGE_TYPES,
-    MAX_IMAGE_SIZE,
-    sniff_image_type,
+    MIME_SUFFIX,
+    safe_file_name,
+    validate_image_upload,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,13 +41,7 @@ logger = logging.getLogger(__name__)
 #: never claims an object uploaded through the API.
 OBJECT_KEY_TEMPLATE = "members/{member_id}/{role}/{unique}{suffix}"
 
-_MIME_SUFFIX = {
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "image/gif": ".gif",
-    "image/heic": ".heic",
-}
+_MIME_SUFFIX = MIME_SUFFIX
 
 
 @dataclass(frozen=True)
@@ -86,12 +78,7 @@ SLOTS: dict[str, PhotoSlot] = {
 
 def safe_photo_name(file_name: str | None) -> str:
     """A file name with any client-supplied path stripped, capped at 255."""
-    raw_name = (file_name or "photo").replace("\\", "/")
-    name = Path(raw_name).name or "photo"
-    if len(name) <= 255:
-        return name
-    suffix = Path(name).suffix
-    return f"{name[: 255 - len(suffix)]}{suffix}"
+    return safe_file_name(file_name, fallback="photo")
 
 
 def validate_photo(file_name: str | None, mime_type: str | None, content: bytes):
@@ -102,36 +89,9 @@ def validate_photo(file_name: str | None, mime_type: str | None, content: bytes)
     them, and the stored name always carries an extension the media layer
     accepts.
     """
-    if not content:
-        raise BadRequestException("Uploaded photo is empty", "INVALID_PHOTO")
-    if len(content) > MAX_IMAGE_SIZE:
-        max_mb = MAX_IMAGE_SIZE // (1024 * 1024)
-        raise BadRequestException(
-            f"Photo is larger than the {max_mb} MB limit", "INVALID_PHOTO"
-        )
-
-    actual = sniff_image_type(content)
-    if actual is None:
-        raise BadRequestException(
-            "The uploaded file is not a valid image", "INVALID_PHOTO"
-        )
-
-    name = safe_photo_name(file_name)
-    suffix = Path(name).suffix.lower()
-    declared = (mime_type or "").split(";")[0].strip().lower()
-    if declared == "image/jpg":
-        declared = "image/jpeg"
-    # A client that sends no usable type (application/octet-stream, or nothing
-    # at all) is not wrong, it just left the guessing to us - but a client that
-    # names an image type and sends something else is.
-    if declared in ALLOWED_IMAGE_TYPES and declared != actual:
-        raise BadRequestException(
-            "The uploaded file is not a valid image", "INVALID_PHOTO"
-        )
-
-    if suffix not in ALLOWED_EXTENSIONS["image"]:
-        name = f"{Path(name).stem or 'photo'}{_MIME_SUFFIX[actual]}"
-    return name, actual
+    return validate_image_upload(
+        file_name, mime_type, content, error_code="INVALID_PHOTO"
+    )
 
 
 class MemberPhotoService:

@@ -9,8 +9,10 @@ from app.config import get_settings
 from app.core.constants import LEGACY_ROLE_ALIASES, RoleName
 from app.core.permissions import ROLE_PERMISSIONS, Permission
 from app.core.security import hash_password
+from app.models.geo import GeoState
 from app.models.user import Permission as PermissionModel
 from app.models.user import Role, RolePermission, User
+from app.services.geo_service import import_geo_data
 from app.services.schema_guard import ensure_schema, report_missing_tables
 
 logger = logging.getLogger(__name__)
@@ -139,6 +141,26 @@ async def _create_default_super_admin(
     )
 
 
+async def _seed_geo_data(session: AsyncSession) -> None:
+    """Load the LGD geo master data once, when the tables are still empty.
+
+    Idempotent by construction: the import itself is an upsert keyed by LGD
+    code, and this guard skips it entirely on every later boot. A failure here
+    must not take the API down (the schema guard already rolled back), so it is
+    caught by the caller and only logged.
+    """
+    count = await session.execute(select(GeoState.id).limit(1))
+    if count.first() is not None:
+        return
+    summary = await import_geo_data(session)
+    logger.info(
+        "Geo master data seeded: %d states, %d districts, %d cities",
+        summary.states_upserted,
+        summary.districts_upserted,
+        summary.cities_upserted,
+    )
+
+
 async def bootstrap_app(session_factory: async_sessionmaker[AsyncSession]) -> None:
     async with session_factory() as session:
         try:
@@ -163,6 +185,18 @@ async def bootstrap_app(session_factory: async_sessionmaker[AsyncSession]) -> No
         except Exception:
             await session.rollback()
             logger.exception("Bootstrap failed")
+
+    async with session_factory() as session:
+        try:
+            await _seed_geo_data(session)
+            await session.commit()
+        except Exception:
+            # Master data is a data problem, not an availability problem: the
+            # API still boots (group creation just 422s until the import runs).
+            await session.rollback()
+            logger.exception(
+                "Geo master data seeding failed; run scripts/import_geo_data.py"
+            )
 
 
 def _role_descriptions() -> dict[str, str]:

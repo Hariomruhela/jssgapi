@@ -1,0 +1,37 @@
+lgd_code,name,code,is_union_territory
+1,Jammu And Kashmir,JK,true
+2,Himachal Pradesh,HP,false
+3,Punjab,PB,false
+4,Chandigarh,CH,true
+5,Uttarakhand,UK,false
+6,Haryana,HR,false
+7,Delhi,DL,true
+8,Rajasthan,RJ,false
+9,Uttar Pradesh,UP,false
+10,Bihar,BR,false
+11,Sikkim,SK,false
+12,Arunachal Pradesh,AR,false
+13,Nagaland,NL,false
+14,Manipur,MN,false
+15,Mizoram,MZ,false
+16,Tripura,TR,false
+17,Meghalaya,ML,false
+18,Assam,AS,false
+19,West Bengal,WB,false
+20,Jharkhand,JH,false
+21,Odisha,OD,false
+22,Chhattisgarh,CG,false
+23,Madhya Pradesh,MP,false
+24,Gujarat,GJ,false
+27,Maharashtra,MH,false
+28,Andhra Pradesh,AP,false
+29,Karnataka,KA,false
+30,Goa,GA,false
+31,Lakshadweep,LD,true
+32,Kerala,KL,false
+33,Tamil Nadu,TN,false
+34,Puducherry,PY,true
+35,Andaman And Nicobar Islands,AN,true
+36,Telangana,TG,false
+37,Ladakh,LA,true
+38,The Dadra And Nagar Haveli And Daman And Diu,DD,true

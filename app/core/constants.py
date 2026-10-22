@@ -87,6 +87,38 @@ class EventStatus(str, Enum):
     COMPLETED = "COMPLETED"
 
 
+class EventType(str, Enum):
+    """The kind of programme an event is, chosen by the host.
+
+    ``OTHER`` is the escape hatch: it must be paired with a free-text
+    ``event_type_other`` so the label is never lost.
+    """
+
+    ANNUAL = "ANNUAL"
+    MONTHLY_PROGRAM = "MONTHLY_PROGRAM"
+    CULTURAL_PROGRAM = "CULTURAL_PROGRAM"
+    RELIGIOUS_PROGRAM = "RELIGIOUS_PROGRAM"
+    SOCIAL_PROGRAM = "SOCIAL_PROGRAM"
+    SPORTS_PROGRAM = "SPORTS_PROGRAM"
+    EDUCATIONAL_PROGRAM = "EDUCATIONAL_PROGRAM"
+    NATIONAL_DAY_PROGRAM = "NATIONAL_DAY_PROGRAM"
+    FUNDRAISER = "FUNDRAISER"
+    OTHER = "OTHER"
+
+
+class EventTimeFrame(str, Enum):
+    """Where an event sits relative to now, derived from its start moment.
+
+    ``UPCOMING`` is the next seven days, ``FUTURE`` is everything beyond that
+    and ``PAST`` is everything already started. It is never stored: it is
+    recomputed on every read so it can never go stale.
+    """
+
+    PAST = "PAST"
+    UPCOMING = "UPCOMING"
+    FUTURE = "FUTURE"
+
+
 class NewsStatus(str, Enum):
     DRAFT = "DRAFT"
     PUBLISHED = "PUBLISHED"
@@ -134,6 +166,8 @@ class AuditAction(str, Enum):
     GROUP_DELETE = "GROUP_DELETE"
     EVENT_CREATE = "EVENT_CREATE"
     EVENT_UPDATE = "EVENT_UPDATE"
+    EVENT_DELETE = "EVENT_DELETE"
+    EVENT_IMAGE_UPLOAD = "EVENT_IMAGE_UPLOAD"
     NEWS_CREATE = "NEWS_CREATE"
     NEWS_PUBLISH = "NEWS_PUBLISH"
     ADVERTISEMENT_APPROVE = "ADVERTISEMENT_APPROVE"
