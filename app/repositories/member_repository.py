@@ -5,10 +5,12 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
+from app.core.constants import LEGACY_ROLE_ALIASES, RoleName
 from app.models.group import SocialGroup
 from app.models.location import Location
 from app.models.member import Member
 from app.models.professional import ProfessionalInformation
+from app.models.user import Role, User
 from app.repositories.base_repository import BaseRepository
 from app.utils.helpers import is_valid_uuid
 
@@ -19,6 +21,50 @@ MEMBER_PROFILE_LOADS = (
     selectinload(Member.group),
     selectinload(Member.location),
 )
+
+#: The roles whose holders are trustees of the group their member row belongs to.
+TRUSTEE_ROLES = frozenset({RoleName.SUPER_ADMIN, RoleName.GROUP_ADMIN})
+
+#: Every stored role label that resolves to a trustee role, including the
+#: retired aliases that old imports may still carry. Matching the raw labels in
+#: SQL keeps the filter working even when a row predates the role cleanup.
+_TRUSTEE_ROLE_LABELS_BY_ROLE: dict[RoleName, frozenset[str]] = {
+    role: frozenset(
+        {role.value}
+        | {
+            label
+            for label, resolved in LEGACY_ROLE_ALIASES.items()
+            if resolved is role
+        }
+    )
+    for role in TRUSTEE_ROLES
+}
+TRUSTEE_ROLE_LABELS = frozenset(
+    label for labels in _TRUSTEE_ROLE_LABELS_BY_ROLE.values() for label in labels
+)
+
+
+def trustee_role_filter(role: RoleName | None = None):
+    """Members whose linked login account is a group or platform administrator.
+
+    A trustee is a community member whose account carries ``GROUP_ADMIN`` or
+    ``SUPER_ADMIN``; the member is not a second record. The member's own
+    ``group_id`` decides which group's trustees they are, so a SUPER_ADMIN is a
+    trustee of the group they were added to rather than of every group.
+    """
+    labels = (
+        _TRUSTEE_ROLE_LABELS_BY_ROLE[role] if role is not None else TRUSTEE_ROLE_LABELS
+    )
+    return (
+        select(User.id)
+        .join(Role, Role.id == User.role_id)
+        .where(
+            User.id == Member.user_id,
+            User.is_deleted.is_(False),
+            func.upper(func.btrim(Role.name, _TRIM_CHARS)).in_(labels),
+        )
+        .exists()
+    )
 
 
 def group_name_filter(group_name: str):
@@ -58,12 +104,11 @@ _TRIM_CHARS = " \t\n\r"
 def designation_filter(designation: str | None = None):
     """Members that carry a group designation, optionally a specific one.
 
-    A trustee is a community member whose group designation is filled in, so
-    this filter is what separates the trustee listing from the member listing.
     The designation is kept in ``members.profile_data`` and mirrored into
     ``professional_information.designation``; either store may hold it, so both
     are read. A blank value (``null``, ``""`` or whitespace only) means the
-    member has no designation and is therefore not a trustee.
+    member has no designation. Being a trustee is decided by the linked
+    account's role (see :func:`trustee_role_filter`), not by this field.
     """
     stored = func.btrim(Member.profile_data["group_designation"].astext, _TRIM_CHARS)
     mirrored = (
@@ -169,10 +214,10 @@ class MemberRepository(BaseRepository[Member]):
             stmt = stmt.where(Member.membership_status == membership_status)
         if group_name:
             stmt = stmt.where(group_name_filter(group_name))
-        if trustee_only or (designation or "").strip():
-            stmt = stmt.where(
-                designation_filter(designation if (designation or "").strip() else None)
-            )
+        if trustee_only:
+            stmt = stmt.where(trustee_role_filter())
+        if (designation or "").strip():
+            stmt = stmt.where(designation_filter(designation.strip()))
         result = await self.session.execute(
             stmt.order_by(Member.first_name).limit(limit).offset(offset)
         )

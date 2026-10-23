@@ -99,13 +99,13 @@ def _as_string(value: Any) -> str | None:
 
 
 def is_trustee_designation(value: str | None) -> bool:
-    """Whether a group designation makes a member a trustee.
+    """Whether a group designation is a real (non-blank) value.
 
-    A trustee is a community member whose ``group_designation`` carries a
-    designation: ``null``, an empty string and a blank string all mean "no
-    designation", so a member without one never shows up in the trustee
-    listing. The stored value is trimmed before the test, because sheet imports
-    and free-text edits keep their padding.
+    ``null``, an empty string and a blank string all mean "no designation".
+    Being a trustee is decided by the member's linked account role, not by this
+    field; the helper is kept for callers that only need the blank check. The
+    stored value is trimmed before the test, because sheet imports and free-text
+    edits keep their padding.
     """
     return bool(value and value.strip())
 

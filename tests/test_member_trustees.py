@@ -1,14 +1,15 @@
-"""The trustee listing is derived from the members' group designation.
+"""The trustee listing is derived from the members' account role.
 
-A trustee is a community member whose ``group_designation`` carries a
-designation: a member without one is a normal member and never shows up in the
-trustee listing, and a member that gains or loses its designation appears in or
-disappears from that listing without a second record being written.
+A trustee is a community member whose linked login account carries
+``GROUP_ADMIN`` or ``SUPER_ADMIN``. The member's own group decides which group's
+trustee they are, so a SUPER_ADMIN is a trustee of the group they were added to,
+not of every group. A designation on its own no longer makes a member a trustee.
 """
 
 from __future__ import annotations
 
 import time
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -36,6 +37,12 @@ def _next_phone() -> str:
     return f"+916{str(time.time_ns())[-9:]}"
 
 
+def _role_id(session: Session, role_name: str) -> UUID:
+    return session.execute(
+        select(Role.id).where(Role.name == role_name)
+    ).scalar_one()
+
+
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as test_client:
@@ -49,16 +56,13 @@ def super_admin(client: TestClient) -> str:
     phone = _next_phone()
     try:
         with Session(engine) as session:
-            role = session.execute(
-                select(Role).where(Role.name == "SUPER_ADMIN")
-            ).scalar_one()
             user = User(
                 phone_number=phone,
                 password_hash=hash_password(PASSWORD),
                 full_name="Trustee Listing Admin",
                 is_email_verified=True,
                 is_phone_verified=True,
-                role_id=role.id,
+                role_id=_role_id(session, "SUPER_ADMIN"),
             )
             session.add(user)
             session.commit()
@@ -81,23 +85,91 @@ def auth(super_admin: str) -> dict:
     return {"Authorization": f"Bearer {super_admin}"}
 
 
-def _create_member(client: TestClient, auth: dict, **fields) -> dict:
+def _create_group(client: TestClient, auth: dict) -> str:
+    response = client.post(
+        "/api/v1/groups",
+        json={
+            "name": f"Trustee Group {str(time.time_ns())[-8:]}",
+            "state": "Madhya Pradesh",
+            "city": "Indore",
+        },
+        headers=auth,
+    )
+    assert response.status_code in (200, 201), response.text
+    return response.json()["data"]["id"]
+
+
+def _create_user(role_name: str, group_id: str | None = None) -> str:
+    engine = create_engine(_psycopg_url(), poolclass=NullPool)
+    try:
+        with Session(engine) as session:
+            user = User(
+                phone_number=_next_phone(),
+                password_hash=hash_password(PASSWORD),
+                full_name=f"Trustee {role_name} {str(time.time_ns())[-6:]}",
+                is_email_verified=True,
+                is_phone_verified=True,
+                role_id=_role_id(session, role_name),
+                group_id=UUID(group_id) if group_id else None,
+            )
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+            return str(user.id)
+    finally:
+        engine.dispose()
+
+
+def _set_user_role(user_id: str, role_name: str) -> None:
+    engine = create_engine(_psycopg_url(), poolclass=NullPool)
+    try:
+        with Session(engine) as session:
+            user = session.get(User, UUID(user_id))
+            assert user is not None
+            user.role_id = _role_id(session, role_name)
+            session.commit()
+    finally:
+        engine.dispose()
+
+
+def _create_member(
+    client: TestClient, auth: dict, *, user_id: str | None = None, **fields
+) -> dict:
     payload = {
         "full_name": f"Trustee Case {str(time.time_ns())[-6:]}",
         "mobile_number": _next_phone(),
     }
+    if user_id is not None:
+        payload["user_id"] = user_id
     payload.update(fields)
     response = client.post("/api/v1/members", json=payload, headers=auth)
     assert response.status_code in (200, 201), response.text
     return response.json()["data"]
 
 
-def _trustee_ids(client: TestClient, auth: dict) -> set[str]:
+def _create_role_member(
+    client: TestClient,
+    auth: dict,
+    role_name: str,
+    *,
+    group_id: str | None = None,
+) -> dict:
+    user_id = _create_user(role_name, group_id=group_id)
+    return _create_member(client, auth, user_id=user_id, group_id=group_id)
+
+
+def _trustee_items(client: TestClient, auth: dict, **params) -> dict[str, dict]:
     response = client.get(
-        "/api/v1/trustees/directory", params={"page_size": 100}, headers=auth
+        "/api/v1/trustees/directory",
+        params={"page_size": 100, **params},
+        headers=auth,
     )
     assert response.status_code == 200, response.text
-    return {item["id"] for item in response.json()["data"]}
+    return {item["id"]: item for item in response.json()["data"]}
+
+
+def _trustee_ids(client: TestClient, auth: dict, **params) -> set[str]:
+    return set(_trustee_items(client, auth, **params))
 
 
 def _member_ids(client: TestClient, auth: dict) -> set[str]:
@@ -106,90 +178,110 @@ def _member_ids(client: TestClient, auth: dict) -> set[str]:
     return {item["id"] for item in response.json()["data"]}
 
 
-def test_a_member_with_a_designation_is_a_trustee(client: TestClient, auth: dict):
-    member = _create_member(client, auth, group_designation="President")
-    assert member["id"] in _trustee_ids(client, auth)
+def test_a_group_admin_member_is_a_trustee(client: TestClient, auth: dict):
+    group_id = _create_group(client, auth)
+    member = _create_role_member(client, auth, "GROUP_ADMIN", group_id=group_id)
+
+    items = _trustee_items(client, auth)
+    assert member["id"] in items
+    assert items[member["id"]]["role"] == "GROUP_ADMIN"
 
 
-def test_a_member_without_a_designation_is_not_a_trustee(
+def test_a_super_admin_member_is_a_trustee_of_its_group(
     client: TestClient, auth: dict
 ):
-    member = _create_member(client, auth)
-    assert member["group_designation"] is None
-    assert member["id"] not in _trustee_ids(client, auth)
+    group_id = _create_group(client, auth)
+    member = _create_role_member(client, auth, "SUPER_ADMIN", group_id=group_id)
+
+    items = _trustee_items(client, auth)
+    assert member["id"] in items
+    assert items[member["id"]]["role"] == "SUPER_ADMIN"
+    assert items[member["id"]]["group_id"] == group_id
 
 
-def test_an_empty_designation_is_not_a_trustee(client: TestClient, auth: dict):
-    member = _create_member(client, auth, group_designation="")
-    assert member["id"] not in _trustee_ids(client, auth)
-
-
-def test_a_blank_designation_is_not_a_trustee(client: TestClient, auth: dict):
-    """Padding left behind by a sheet import must not make a member a trustee."""
-    member = _create_member(client, auth, group_designation="   ")
-    assert member["id"] not in _trustee_ids(client, auth)
-
-
-def test_a_normal_member_stays_in_the_member_listing(client: TestClient, auth: dict):
-    """The trustee listing narrows the member listing, it does not replace it."""
-    trustee = _create_member(client, auth, group_designation="Secretary")
-    plain = _create_member(client, auth)
-
-    member_ids = _member_ids(client, auth)
-    assert trustee["id"] in member_ids
-    assert plain["id"] in member_ids
-
-
-def test_adding_a_designation_turns_a_member_into_a_trustee(
-    client: TestClient, auth: dict
-):
-    member = _create_member(client, auth)
-    assert member["id"] not in _trustee_ids(client, auth)
-
-    response = client.patch(
+def test_a_member_role_is_not_a_trustee(client: TestClient, auth: dict):
+    """A designation alone must not make a MEMBER a trustee."""
+    group_id = _create_group(client, auth)
+    member = _create_role_member(
+        client,
+        auth,
+        "MEMBER",
+        group_id=group_id,
+    )
+    client.patch(
         f"/api/v1/members/{member['id']}",
-        json={"group_designation": "Treasurer"},
+        json={"group_designation": "President"},
         headers=auth,
     )
-    assert response.status_code == 200, response.text
-    assert member["id"] in _trustee_ids(client, auth)
+
+    assert member["id"] not in _trustee_ids(client, auth)
 
 
-def test_removing_a_designation_turns_a_trustee_back_into_a_member(
+def test_a_member_without_an_account_is_not_a_trustee(
     client: TestClient, auth: dict
 ):
     member = _create_member(client, auth, group_designation="President")
-    assert member["id"] in _trustee_ids(client, auth)
-
-    response = client.patch(
-        f"/api/v1/members/{member['id']}",
-        json={"group_designation": None},
-        headers=auth,
-    )
-    assert response.status_code == 200, response.text
     assert member["id"] not in _trustee_ids(client, auth)
-    # The member itself is untouched by the change.
+
+
+def test_a_trustee_is_also_a_member(client: TestClient, auth: dict):
+    group_id = _create_group(client, auth)
+    member = _create_role_member(client, auth, "GROUP_ADMIN", group_id=group_id)
+
+    assert member["id"] in _trustee_ids(client, auth)
     assert member["id"] in _member_ids(client, auth)
 
 
-def test_the_trustee_listing_carries_the_designation_and_the_member(
+def test_the_role_filter_narrows_the_listing(client: TestClient, auth: dict):
+    group_admin = _create_role_member(
+        client, auth, "GROUP_ADMIN", group_id=_create_group(client, auth)
+    )
+    super_admin = _create_role_member(
+        client, auth, "SUPER_ADMIN", group_id=_create_group(client, auth)
+    )
+
+    ids = _trustee_ids(client, auth, role="SUPER_ADMIN")
+    assert super_admin["id"] in ids
+    assert group_admin["id"] not in ids
+
+
+def test_the_role_filter_rejects_an_unknown_role(client: TestClient, auth: dict):
+    response = client.get(
+        "/api/v1/trustees", params={"role": "MEMBER"}, headers=auth
+    )
+    assert response.status_code == 400, response.text
+
+
+def test_promoting_a_member_makes_it_a_trustee(client: TestClient, auth: dict):
+    group_id = _create_group(client, auth)
+    user_id = _create_user("MEMBER", group_id=group_id)
+    member = _create_member(client, auth, user_id=user_id, group_id=group_id)
+    assert member["id"] not in _trustee_ids(client, auth)
+
+    _set_user_role(user_id, "GROUP_ADMIN")
+    assert member["id"] in _trustee_ids(client, auth)
+
+    _set_user_role(user_id, "MEMBER")
+    assert member["id"] not in _trustee_ids(client, auth)
+
+
+def test_the_trustee_listing_carries_the_member_and_the_role(
     client: TestClient, auth: dict
 ):
-    member = _create_member(client, auth, group_designation="President")
-    response = client.get(
-        "/api/v1/trustees/directory", params={"page_size": 100}, headers=auth
-    )
-    assert response.status_code == 200, response.text
-    items = {item["id"]: item for item in response.json()["data"]}
-    assert member["id"] in items
-    item = items[member["id"]]
-    assert item["designation"] == "President"
+    group_id = _create_group(client, auth)
+    member = _create_role_member(client, auth, "GROUP_ADMIN", group_id=group_id)
+
+    item = _trustee_items(client, auth)[member["id"]]
     # The trustee is the member: the same id, not a second record.
     assert item["member_id"] == member["id"]
+    assert item["role"] == "GROUP_ADMIN"
     assert item["full_name"]
 
 
 def test_the_trustee_listing_is_paginated(client: TestClient, auth: dict):
+    _create_role_member(
+        client, auth, "GROUP_ADMIN", group_id=_create_group(client, auth)
+    )
     response = client.get(
         "/api/v1/trustees/directory",
         params={"page": 1, "page_size": 1},
@@ -208,16 +300,25 @@ def test_the_trustee_listing_is_paginated(client: TestClient, auth: dict):
 def test_the_trustee_listing_can_be_narrowed_to_one_designation(
     client: TestClient, auth: dict
 ):
-    president = _create_member(client, auth, group_designation="President")
-    secretary = _create_member(client, auth, group_designation="Secretary")
-
-    response = client.get(
-        "/api/v1/trustees/directory",
-        params={"designation": "president", "page_size": 100},
+    group_id = _create_group(client, auth)
+    president = _create_role_member(
+        client, auth, "GROUP_ADMIN", group_id=group_id
+    )
+    secretary = _create_role_member(
+        client, auth, "SUPER_ADMIN", group_id=group_id
+    )
+    client.patch(
+        f"/api/v1/members/{president['id']}",
+        json={"group_designation": "President"},
         headers=auth,
     )
-    assert response.status_code == 200, response.text
-    ids = {item["id"] for item in response.json()["data"]}
+    client.patch(
+        f"/api/v1/members/{secretary['id']}",
+        json={"group_designation": "Secretary"},
+        headers=auth,
+    )
+
+    ids = _trustee_ids(client, auth, designation="president")
     assert president["id"] in ids
     assert secretary["id"] not in ids
 
@@ -225,8 +326,10 @@ def test_the_trustee_listing_can_be_narrowed_to_one_designation(
 def test_the_member_listing_can_be_narrowed_to_the_trustees(
     client: TestClient, auth: dict
 ):
-    trustee = _create_member(client, auth, group_designation="President")
+    group_id = _create_group(client, auth)
+    trustee = _create_role_member(client, auth, "GROUP_ADMIN", group_id=group_id)
     plain = _create_member(client, auth)
+    assert plain["id"] not in _trustee_ids(client, auth)
 
     response = client.get(
         "/api/v1/members",
@@ -234,20 +337,18 @@ def test_the_member_listing_can_be_narrowed_to_the_trustees(
         headers=auth,
     )
     assert response.status_code == 200, response.text
-    items = response.json()["data"]
-    ids = {item["id"] for item in items}
+    ids = {item["id"] for item in response.json()["data"]}
     assert trustee["id"] in ids
     assert plain["id"] not in ids
-    # Every trustee carries a designation; a blank one is not a designation.
-    for item in items:
-        assert (item.get("group_designation") or "").strip()
 
 
 def test_the_member_listing_search_keeps_the_trustee_filter(
     client: TestClient, auth: dict
 ):
-    trustee = _create_member(client, auth, group_designation="President")
+    group_id = _create_group(client, auth)
+    trustee = _create_role_member(client, auth, "GROUP_ADMIN", group_id=group_id)
     plain = _create_member(client, auth)
+    assert plain["id"] not in _trustee_ids(client, auth)
 
     response = client.get(
         "/api/v1/members",
@@ -269,17 +370,18 @@ def test_the_trustee_listing_requires_authentication(client: TestClient):
 
 
 def test_the_trustee_listing_serves_the_members(client: TestClient, auth: dict):
-    """``GET /trustees`` is the trustee listing: the members with a designation."""
-    member = _create_member(client, auth, group_designation="President")
+    group_id = _create_group(client, auth)
+    member = _create_role_member(client, auth, "GROUP_ADMIN", group_id=group_id)
+
     response = client.get("/api/v1/trustees", params={"page_size": 100}, headers=auth)
     assert response.status_code == 200, response.text
     items = response.json()["data"]
     ids = {item["id"] for item in items}
     assert member["id"] in ids
     for item in items:
-        # Every trustee is a member and carries a designation.
+        # Every trustee is a member and carries an administrator tag.
         assert item["member_id"] == item["id"]
-        assert item["designation"].strip()
+        assert item["role"] in ("GROUP_ADMIN", "SUPER_ADMIN")
 
 
 def test_the_board_seats_keep_their_own_listing(client: TestClient, auth: dict):
@@ -289,29 +391,17 @@ def test_the_board_seats_keep_their_own_listing(client: TestClient, auth: dict):
     )
     assert response.status_code == 200, response.text
     board = response.json()["data"]
-    # A board seat is a trustee record, never a member row.
     for item in board:
         assert "designation" in item
         assert "first_name" in item
     assert isinstance(board, list)
 
 
-def test_a_board_seat_puts_its_member_in_the_trustee_listing(
+def test_a_board_seat_does_not_make_a_member_a_trustee(
     client: TestClient, auth: dict
 ):
-    """Promoting a member to the board gives it the seat's designation."""
-    group = client.post(
-        "/api/v1/groups",
-        json={
-            "name": f"Trustee Board {str(time.time_ns())[-6:]}",
-            "state": "Madhya Pradesh",
-            "city": "Indore",
-        },
-        headers=auth,
-    )
-    assert group.status_code in (200, 201), group.text
-    group_id = group.json()["data"]["id"]
-
+    """A board seat is its own record; being on it is not a trustee role."""
+    group_id = _create_group(client, auth)
     member = _create_member(client, auth, group_id=group_id)
     assert member["id"] not in _trustee_ids(client, auth)
 
@@ -330,16 +420,11 @@ def test_a_board_seat_puts_its_member_in_the_trustee_listing(
     seat = response.json()["data"]
     assert seat["member_id"] == member["id"]
 
-    assert member["id"] in _trustee_ids(client, auth)
-    listing = client.get(
-        "/api/v1/trustees/directory", params={"page_size": 100}, headers=auth
-    ).json()
-    item = next(i for i in listing["data"] if i["id"] == member["id"])
-    assert item["designation"] == "Treasurer"
-
-    # Retiring the seat takes the designation with it.
-    response = client.delete(f"/api/v1/trustees/{seat['id']}", headers=auth)
-    assert response.status_code == 200, response.text
+    board = client.get(
+        "/api/v1/trustees/board", params={"page_size": 100}, headers=auth
+    ).json()["data"]
+    assert seat["id"] in {item["id"] for item in board}
+    # The seat carries a designation on the member, but no administrator role.
     assert member["id"] not in _trustee_ids(client, auth)
 
 
@@ -347,13 +432,11 @@ def test_a_trustee_directory_item_is_never_a_duplicate_member(
     client: TestClient, auth: dict
 ):
     """One member is one trustee: the directory adds no rows of its own."""
-    member = _create_member(client, auth, group_designation="President")
-    response = client.get(
-        "/api/v1/trustees/directory", params={"page_size": 100}, headers=auth
-    )
-    assert response.status_code == 200, response.text
-    items = response.json()["data"]
-    matching = [item for item in items if item["id"] == member["id"]]
+    group_id = _create_group(client, auth)
+    member = _create_role_member(client, auth, "GROUP_ADMIN", group_id=group_id)
+
+    items = _trustee_items(client, auth)
+    matching = [item for item in items.values() if item["id"] == member["id"]]
     assert len(matching) == 1
     assert matching[0]["member_id"] == member["id"]
 
@@ -371,34 +454,39 @@ def test_the_trustee_listing_is_group_scoped(client: TestClient):
         session.refresh(group_a)
         session.refresh(group_b)
 
-        role = session.execute(
-            select(Role).where(Role.name == "GROUP_ADMIN")
-        ).scalar_one()
-        user = User(
+        admin = User(
             phone_number=phone,
             password_hash=hash_password(PASSWORD),
             full_name="Trustee Group Admin",
             is_email_verified=True,
             is_phone_verified=True,
-            role_id=role.id,
+            role_id=_role_id(session, "GROUP_ADMIN"),
             group_id=group_a.id,
         )
-        session.add(user)
+        foreign = User(
+            phone_number=_next_phone(),
+            password_hash=hash_password(PASSWORD),
+            full_name="Foreign Trustee",
+            is_email_verified=True,
+            is_phone_verified=True,
+            role_id=_role_id(session, "SUPER_ADMIN"),
+        )
+        session.add_all([admin, foreign])
         session.commit()
-        session.refresh(user)
+        session.refresh(admin)
+        session.refresh(foreign)
 
         member_a = Member(
-            user_id=user.id,
+            user_id=admin.id,
             group_id=group_a.id,
             first_name="Local",
             last_name="Trustee",
-            profile_data={"group_designation": "President"},
         )
         member_b = Member(
+            user_id=foreign.id,
             group_id=group_b.id,
             first_name="Foreign",
             last_name="Trustee",
-            profile_data={"group_designation": "President"},
         )
         session.add_all([member_a, member_b])
         session.commit()
@@ -419,11 +507,7 @@ def test_the_trustee_listing_is_group_scoped(client: TestClient):
         assert login.status_code == 200, login.text
         headers = {"Authorization": f"Bearer {login.json()['tokens']['access_token']}"}
 
-        response = client.get(
-            "/api/v1/trustees/directory", params={"page_size": 100}, headers=headers
-        )
-        assert response.status_code == 200, response.text
-        ids = {item["id"] for item in response.json()["data"]}
+        ids = _trustee_ids(client, headers)
         assert str(member_a_id) in ids
         assert str(member_b_id) not in ids
 
@@ -439,7 +523,9 @@ def test_the_trustee_listing_is_group_scoped(client: TestClient):
             session.execute(
                 delete(Member).where(Member.id.in_([member_a_id, member_b_id]))
             )
-            session.execute(delete(User).where(User.id == user.id))
+            session.execute(
+                delete(User).where(User.id.in_([admin.id, foreign.id]))
+            )
             session.execute(
                 delete(SocialGroup).where(SocialGroup.id.in_([group_a_id, group_b_id]))
             )

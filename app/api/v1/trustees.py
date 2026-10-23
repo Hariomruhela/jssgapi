@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, or_, select
 
-from app.core.constants import MemberStatus
+from app.core.constants import MemberStatus, RoleName, resolve_role_name
 from app.core.exceptions import (
     BadRequestException,
     ForbiddenException,
@@ -24,8 +24,10 @@ from app.models.member import Member
 from app.models.trustee import Trustee
 from app.repositories.member_repository import (
     MEMBER_PROFILE_LOADS,
+    TRUSTEE_ROLES,
     MemberRepository,
     designation_filter,
+    trustee_role_filter,
 )
 from app.repositories.trustee_repository import TrusteeRepository
 from app.schemas.trustee import (
@@ -50,6 +52,7 @@ async def _trustee_listing(
     *,
     group_id: UUID | None = None,
     is_current: bool | None = None,
+    role: str | None = None,
     designation: str | None = None,
     query: str | None = None,
     page: int = 1,
@@ -57,14 +60,23 @@ async def _trustee_listing(
 ):
     """The trustees of the directory, derived from the members themselves.
 
-    A trustee is a community member whose group designation is filled in, so
-    this listing is the member listing narrowed to the members that carry a
-    designation. Nothing is duplicated: the item is the member, and a member
-    that loses its designation simply drops out of the listing.
+    A trustee is a community member whose linked login account carries
+    ``GROUP_ADMIN`` or ``SUPER_ADMIN``. The member's own group decides which
+    group's trustee they are, so a SUPER_ADMIN is a trustee of the group they
+    were added to, not of every group. Nothing is duplicated: the item is the
+    member, and a member that loses the role simply drops out of the listing.
     """
     scope = await get_access_scope(db, current_user)
     if group_id is not None and not scope.unrestricted and group_id != scope.group_id:
         raise ForbiddenException("Operation is limited to your own group")
+
+    resolved_role: RoleName | None = None
+    if (role or "").strip():
+        resolved_role = resolve_role_name(role)
+        if resolved_role not in TRUSTEE_ROLES:
+            raise BadRequestException(
+                "Role must be one of: GROUP_ADMIN, SUPER_ADMIN"
+            )
 
     stmt = (
         select(Member)
@@ -86,9 +98,9 @@ async def _trustee_listing(
             if is_current
             else Member.membership_status != current
         )
-    stmt = stmt.where(
-        designation_filter(designation if (designation or "").strip() else None)
-    )
+    stmt = stmt.where(trustee_role_filter(resolved_role))
+    if (designation or "").strip():
+        stmt = stmt.where(designation_filter(designation.strip()))
     if query:
         needle = f"%{query.strip()}%"
         stmt = stmt.where(
@@ -129,6 +141,12 @@ async def list_trustees(
         description="Only the current trustees (the approved members) or only "
         "the ones that are not approved yet.",
     ),
+    role: str | None = Query(
+        default=None,
+        max_length=50,
+        description="Only the trustees whose account carries this role: "
+        "GROUP_ADMIN or SUPER_ADMIN.",
+    ),
     designation: str | None = Query(
         default=None,
         max_length=255,
@@ -141,10 +159,10 @@ async def list_trustees(
 ):
     """The trustees of the directory.
 
-    A trustee is a community member whose group designation is filled in, so
-    this listing is the member listing narrowed to the members that carry a
-    designation. Nothing is duplicated: the item is the member, and a member
-    that loses its designation simply drops out of the listing.
+    A trustee is a community member whose linked login account carries
+    ``GROUP_ADMIN`` or ``SUPER_ADMIN``. The member's own group decides which
+    group's trustee they are, so a SUPER_ADMIN is a trustee of the group they
+    were added to, not of every group.
 
     The board seats kept in the ``trustees`` table are still served by
     ``GET /trustees/board``.
@@ -154,6 +172,7 @@ async def list_trustees(
         current_user,
         group_id=group_id,
         is_current=is_current,
+        role=role,
         designation=designation,
         query=query,
         page=page,
@@ -167,6 +186,12 @@ async def list_member_trustees(
     current_user: CurrentUser,
     group_id: UUID | None = Query(default=None),
     is_current: bool | None = Query(default=None),
+    role: str | None = Query(
+        default=None,
+        max_length=50,
+        description="Only the trustees whose account carries this role: "
+        "GROUP_ADMIN or SUPER_ADMIN.",
+    ),
     designation: str | None = Query(
         default=None,
         max_length=255,
@@ -183,6 +208,7 @@ async def list_member_trustees(
         current_user,
         group_id=group_id,
         is_current=is_current,
+        role=role,
         designation=designation,
         query=query,
         page=page,
@@ -241,6 +267,15 @@ async def list_board_seats(
     )
 
 
+def _member_trustee_role(member: Member) -> str | None:
+    """The trustee tag of a member: ``GROUP_ADMIN`` or ``SUPER_ADMIN``."""
+    user = member.user
+    if user is None or user.role is None:
+        return None
+    resolved = resolve_role_name(user.role.name)
+    return resolved.value if resolved in TRUSTEE_ROLES else None
+
+
 def _member_trustee_out(member: Member, profiles: ProfileService) -> MemberTrusteeOut:
     """The trustee view of a member, built from the member's own fields.
 
@@ -253,6 +288,8 @@ def _member_trustee_out(member: Member, profiles: ProfileService) -> MemberTrust
     group = member.group
     if group is not None and group.is_deleted:
         group = None
+    role = _member_trustee_role(member)
+    designation = (profile.group_designation or "").strip()
     return MemberTrusteeOut(
         id=member.id,
         member_id=member.id,
@@ -261,7 +298,9 @@ def _member_trustee_out(member: Member, profiles: ProfileService) -> MemberTrust
         first_name=member.first_name,
         last_name=member.last_name,
         full_name=profile.full_name or "",
-        designation=(profile.group_designation or "").strip(),
+        role=role,
+        # The tag is the role when the member has no board designation to show.
+        designation=designation or (role or ""),
         contact_email=member.contact_email,
         contact_phone=member.contact_phone,
         profile_photo_url=member.profile_photo_url,
@@ -300,8 +339,8 @@ async def create_trustee(body: TrusteeCreate, current_user: CurrentUser, db: DBS
         )
 
     trustee = await TrusteeRepository(db).create(**data)
-    # A seat that belongs to a member carries that member's designation, so the
-    # trustee shows up in the trustee listing (GET /trustees) straight away.
+    # Keep the seat's designation mirrored on its member, so the member profile
+    # and the board seat agree even though the trustee listing is role-based.
     await _mirror_designation_to_member(
         db, member_id=trustee.member_id, designation=trustee.designation
     )
@@ -335,8 +374,8 @@ async def update_trustee(
     if body.group_id is not None:
         await assert_group_access(db, current_user, body.group_id)
     trustee = await repo.update(trustee, **body.model_dump(exclude_unset=True))
-    # The seat and the member stay in step: the designation of the seat is the
-    # designation the member carries in the trustee listing.
+    # The seat and the member stay in step: the designation of the seat is also
+    # written onto the member profile.
     await _mirror_designation_to_member(
         db, member_id=trustee.member_id, designation=trustee.designation
     )
@@ -373,9 +412,9 @@ async def _mirror_designation_to_member(
 ) -> None:
     """Write a board seat's designation onto the member it belongs to.
 
-    A trustee is a member with a designation, so a seat and its member must
-    agree. ``only_if_current`` leaves a designation that the member has since
-    changed alone.
+    The seat and the member profile must agree about the seat's designation.
+    ``only_if_current`` leaves a designation that the member has since changed
+    alone.
     """
     if member_id is None:
         return

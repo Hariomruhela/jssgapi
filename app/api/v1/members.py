@@ -27,6 +27,7 @@ from app.repositories.member_repository import (
     MemberRepository,
     designation_filter,
     group_name_filter,
+    trustee_role_filter,
 )
 from app.schemas.member import (
     MemberApproveRequest,
@@ -126,9 +127,8 @@ async def list_members(
     query: str | None = Query(default=None, max_length=200),
     trustee_only: bool = Query(
         default=False,
-        description="Only the members that carry a group designation, i.e. the "
-        "trustees. A blank designation (null, empty or whitespace) never "
-        "counts as one.",
+        description="Only the members whose linked account is a GROUP_ADMIN or "
+        "SUPER_ADMIN, i.e. the trustees of their group.",
     ),
     designation: str | None = Query(
         default=None,
@@ -196,12 +196,12 @@ async def list_members(
     )
     if group_name:
         stmt = stmt.where(group_name_filter(group_name))
-    # The trustee listing is the member listing narrowed to the members that
-    # carry a designation, so the two never drift apart.
-    if trustee_only or (designation or "").strip():
-        stmt = stmt.where(
-            designation_filter(designation if (designation or "").strip() else None)
-        )
+    # The trustee listing is the member listing narrowed to the members whose
+    # account carries a trustee role, so the two never drift apart.
+    if trustee_only:
+        stmt = stmt.where(trustee_role_filter())
+    if (designation or "").strip():
+        stmt = stmt.where(designation_filter(designation.strip()))
     if scope.member_id is not None and scope.group_id is None:
         stmt = stmt.where(Member.id == scope.member_id)
     total = (
