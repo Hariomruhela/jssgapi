@@ -116,6 +116,7 @@ class GroupRepository(BaseRepository[SocialGroup]):
             SocialGroup.name_hi.ilike(term),
             SocialGroup.description.ilike(term),
             SocialGroup.address.ilike(term),
+            SocialGroup.contact_name.ilike(term),
             SocialGroup.contact_email.ilike(term),
             SocialGroup.contact_phone.ilike(term),
             SocialGroup.status.ilike(term),

@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class SocialGroupCreate(BaseModel):
@@ -14,11 +21,16 @@ class SocialGroupCreate(BaseModel):
     (``MP09001``) is built from. A client-sent ``group_id`` is accepted but
     **ignored**: the server always generates the ID, so a stale or forged value
     can never end up on the record.
+
+    ``admin_name`` and ``admin_phone_number`` are optional as a pair. When both
+    are supplied, the phone's account is created (or reused) and made this
+    group's default ``GROUP_ADMIN`` in the same request.
     """
 
     name: str
     name_hi: str | None = None
     description: str | None = None
+    contact_name: str | None = None
     contact_email: str | None = None
     contact_phone: str | None = None
     address: str | None = None
@@ -29,6 +41,19 @@ class SocialGroupCreate(BaseModel):
     state: str
     city: str
     group_id: str | None = None
+    admin_name: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=255,
+        validation_alias=AliasChoices("admin_name", "admin_full_name"),
+    )
+    admin_phone_number: str | None = Field(
+        default=None,
+        min_length=1,
+        validation_alias=AliasChoices(
+            "admin_phone_number", "admin_phone", "admin_mobile_number"
+        ),
+    )
 
     @field_validator("state", "city")
     @classmethod
@@ -39,18 +64,38 @@ class SocialGroupCreate(BaseModel):
             raise ValueError("must not be empty")
         return stripped
 
+    @field_validator("admin_name", "admin_phone_number")
+    @classmethod
+    def _trim_admin_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be empty")
+        return stripped
+
+    @model_validator(mode="after")
+    def _require_admin_pair(self) -> SocialGroupCreate:
+        if (self.admin_name is None) != (self.admin_phone_number is None):
+            raise ValueError(
+                "admin_name and admin_phone_number must be provided together"
+            )
+        return self
+
 
 class SocialGroupUpdate(BaseModel):
     """``PATCH /groups/{id}`` body.
 
-    Deliberately free of ``group_id``, ``state`` and ``city``: the generated ID
-    encodes the city a group was created in, so it survives every update
-    untouched rather than drifting out of sync with the record.
+    ``state`` and ``city`` can be corrected after creation and are validated
+    against the same geo master data as ``POST /groups``. ``group_id`` stays
+    immutable: it is the group's stable business identifier and may already be
+    embedded in member IDs and external references.
     """
 
     name: str | None = None
     name_hi: str | None = None
     description: str | None = None
+    contact_name: str | None = None
     contact_email: str | None = None
     contact_phone: str | None = None
     address: str | None = None
@@ -58,6 +103,19 @@ class SocialGroupUpdate(BaseModel):
     status: str | None = None
     is_active: bool | None = None
     location_id: UUID | None = None
+    state: str | None = None
+    city: str | None = None
+
+    @field_validator("state", "city")
+    @classmethod
+    def _reject_blank(cls, value: str | None) -> str | None:
+        """Trim optional place fields, refusing explicit blanks (422)."""
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be empty")
+        return stripped
 
 
 class SocialGroupOut(BaseModel):
@@ -70,6 +128,7 @@ class SocialGroupOut(BaseModel):
     city: str | None = None
     name_hi: str | None = None
     description: str | None = None
+    contact_name: str | None = None
     contact_email: str | None = None
     contact_phone: str | None = None
     address: str | None = None

@@ -30,7 +30,7 @@ class GeoCityOut(BaseModel):
     district_name: str | None = None
     ulb_type_code: int | None = None
     census_2011_code: str | None = None
-    #: Project-owned Group-ID city code, e.g. ``09``.
+    #: RTO-aligned Group-ID city code, e.g. ``09``.
     city_code: str
     #: ``state.code + city_code``, e.g. ``MP09``.
     prefix: str

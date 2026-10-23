@@ -386,7 +386,31 @@ def test_concurrent_creates_never_share_a_group_id(client, auth):
 # --- persistence guarantees -------------------------------------------------
 
 
-def test_update_never_changes_the_generated_id(client, auth):
+def test_contact_name_round_trips_through_create_and_update(client, auth):
+    stamp = uuid4().hex[:8]
+    group = _create_group(
+        client,
+        auth,
+        f"Contact Name {stamp}",
+        contact_name="Asha Shah",
+        contact_phone="+919876543210",
+        **INDORE,
+    )
+    assert group["contact_name"] == "Asha Shah"
+    assert group["contact_phone"] == "+919876543210"
+
+    response = client.patch(
+        f"/api/v1/groups/{group['id']}",
+        json={"contact_name": "Ravi Shah"},
+        headers=auth,
+    )
+    assert response.status_code == 200, response.text
+    updated = response.json()["data"]
+    assert updated["contact_name"] == "Ravi Shah"
+    assert updated["contact_phone"] == "+919876543210"
+
+
+def test_update_changes_place_but_never_the_generated_id(client, auth):
     stamp = uuid4().hex[:8]
     group = _create_group(client, auth, f"Stable ID {stamp}", **INDORE)
     original_id = group["group_id"]
@@ -396,7 +420,7 @@ def test_update_never_changes_the_generated_id(client, auth):
         json={
             "name": f"Stable ID Renamed {stamp}",
             "description": "edited after creation",
-            # A hostile/stale client cannot rewrite the ID or the place.
+            # A hostile/stale client cannot rewrite the stable business ID.
             "group_id": "MH15999",
             "state": "Maharashtra",
             "city": "Nashik",
@@ -406,8 +430,8 @@ def test_update_never_changes_the_generated_id(client, auth):
     assert response.status_code == 200, response.text
     updated = response.json()["data"]
     assert updated["group_id"] == original_id
-    assert updated["state"] == "Madhya Pradesh"
-    assert updated["city"] == "Indore"
+    assert updated["state"] == "Maharashtra"
+    assert updated["city"] == "Nashik"
     assert updated["description"] == "edited after creation"
 
 

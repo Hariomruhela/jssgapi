@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from typing import Any
 from uuid import UUID
 
@@ -22,10 +23,11 @@ from app.core.scope import (
     get_access_scope,
     get_admin_scope,
 )
+from app.core.security import hash_password
 from app.dependencies import CurrentUser, DBSession, require_permission
 from app.models.group import SocialGroup
 from app.models.member import Member
-from app.models.user import Role
+from app.models.user import Role, User
 from app.repositories.group_repository import GroupRepository
 from app.repositories.member_repository import MemberRepository
 from app.repositories.user_repository import UserRepository
@@ -41,6 +43,7 @@ from app.schemas.group import (
 from app.services.audit_service import AuditService
 from app.services.group_id_service import assign_member_id, next_group_id, resolve_city
 from app.services.sheet_groups_service import read_sheet_groups
+from app.utils.validators import normalize_phone_number
 
 router = APIRouter(prefix="/groups", tags=["Groups"])
 
@@ -72,6 +75,85 @@ async def _resolve_role(db, role_name: str | None) -> Role:
     if role is None:
         raise BadRequestException(f"Role '{canonical.value}' is not configured yet")
     return role
+
+
+async def _get_user_by_phone_forms(
+    repo: UserRepository, normalized: str
+) -> User | None:
+    """Find an account stored either as ``+91XXXXXXXXXX`` or ``XXXXXXXXXX``."""
+    user = await repo.get_by_phone(normalized)
+    if user is None:
+        local = normalized.removeprefix("+91")
+        if local != normalized:
+            user = await repo.get_by_phone(local)
+    return user
+
+
+async def _assign_default_group_admin(
+    db, group: SocialGroup, admin_name: str, admin_phone_number: str
+) -> User:
+    """Create or reuse the phone's account and make it this group's admin.
+
+    A phone that already belongs to an active account is promoted instead of
+    duplicated; the entered name is used only for a newly created account. This
+    mirrors ``POST /groups/{id}/admins``: ``User.group_id`` becomes the scope,
+    so a reassigned account is no longer an admin of its previous group.
+    """
+    role = await _resolve_role(db, RoleName.GROUP_ADMIN.value)
+    normalized = normalize_phone_number(admin_phone_number)
+    user_repo = UserRepository(db)
+    user = await _get_user_by_phone_forms(user_repo, normalized)
+
+    if user is None:
+        user = await user_repo.create(
+            phone_number=normalized,
+            full_name=admin_name,
+            # NOT NULL column: OTP/Firebase login is how this account signs in,
+            # so the password stays unknowable.
+            password_hash=hash_password(secrets.token_urlsafe(32)),
+            is_active=True,
+            role_id=role.id,
+            group_id=group.id,
+        )
+        await AuditService(db).log(
+            AuditAction.ROLE_CHANGE,
+            entity_type="user",
+            entity_id=user.id,
+            details={
+                "role": role.name,
+                "group_id": str(group.id),
+                "source": "group_create",
+                "created": True,
+            },
+        )
+        return user
+
+    if not user.is_active:
+        raise BadRequestException("Cannot assign an inactive account as a Group Admin")
+
+    already_admin = (
+        user.group_id == group.id
+        and user.role is not None
+        and resolve_role_name(user.role.name) is RoleName.GROUP_ADMIN
+    )
+    if already_admin:
+        return user
+
+    user.role_id = role.id
+    user.group_id = group.id
+    await db.flush()
+    await db.refresh(user)
+    await AuditService(db).log(
+        AuditAction.ROLE_CHANGE,
+        entity_type="user",
+        entity_id=user.id,
+        details={
+            "role": role.name,
+            "group_id": str(group.id),
+            "source": "group_create",
+        },
+    )
+    return user
 
 
 @router.get("", dependencies=[READ])
@@ -167,21 +249,37 @@ async def create_group(body: SocialGroupCreate, db: DBSession):
     first Indore group. The counter, the ID and the row are written in one
     transaction, and a client-sent ``group_id`` is ignored. An unchanged name
     still returns the existing group instead of a duplicate.
+
+    When ``admin_name`` and ``admin_phone_number`` are supplied together, that
+    phone's account is created (or promoted) to this group's ``GROUP_ADMIN`` in
+    the same transaction.
     """
     repo = GroupRepository(db)
     city = await resolve_city(db, body.state, body.city)
     existing = await repo.get_by_name(body.name)
     if existing:
+        if body.admin_name is not None:
+            assert body.admin_phone_number is not None
+            await _assign_default_group_admin(
+                db, existing, body.admin_name, body.admin_phone_number
+            )
+            await db.refresh(existing, ["admins"])
         return created(
             "Group created successfully", SocialGroupOut.model_validate(existing)
         )
-    # ``group_id`` is dropped from the payload: the server owns the ID.
-    values = body.model_dump(exclude={"group_id"})
+    # ``group_id`` and the admin fields are dropped from the group row: the
+    # server owns the ID, and the account is written separately below.
+    values = body.model_dump(exclude={"group_id", "admin_name", "admin_phone_number"})
     values["state"] = city.state
     values["city"] = city.city
     try:
         values["group_id"] = await next_group_id(db, city)
         group = await repo.create(**values)
+        if body.admin_name is not None:
+            assert body.admin_phone_number is not None
+            await _assign_default_group_admin(
+                db, group, body.admin_name, body.admin_phone_number
+            )
         await db.flush()
     except IntegrityError as exc:
         # The unique index on group_id is the backstop behind the counter: if
@@ -194,7 +292,14 @@ async def create_group(body: SocialGroupCreate, db: DBSession):
                 "Could not allocate a unique Group ID for this city; "
                 "retry the request."
             ) from exc
+        if "phone_number" in str(exc):
+            raise ConflictException(
+                "An account with this phone number already exists; retry "
+                "the request."
+            ) from exc
         raise
+    if body.admin_name is not None:
+        await db.refresh(group, ["admins"])
     return created("Group created successfully", SocialGroupOut.model_validate(group))
 
 
@@ -458,7 +563,18 @@ async def update_group(
     if group is None:
         raise NotFoundException("Group", str(group_id))
     await assert_group_access(db, current_user, group.id)
-    group = await repo.update(group, **body.model_dump(exclude_unset=True))
+    updates = body.model_dump(exclude_unset=True)
+    if "state" in updates or "city" in updates:
+        state = updates.get("state", group.state)
+        city = updates.get("city", group.city)
+        if not state or not city:
+            raise BadRequestException(
+                "Both state and city are required when changing a group's location."
+            )
+        place = await resolve_city(db, state, city)
+        updates["state"] = place.state
+        updates["city"] = place.city
+    group = await repo.update(group, **updates)
     await AuditService(db).log(
         AuditAction.GROUP_UPDATE, entity_type="group", entity_id=group.id
     )

@@ -6,12 +6,12 @@ Maharashtra:
 
 * **state code** - the project's two-letter prefix for the State/UT
   (``geo_states.code``, e.g. ``MP``, ``MH``);
-* **city code** - the explicit, deterministic code assigned to the city in
-  ``geo_cities.city_code`` (``04`` for Bhopal, ``09`` for Indore, ``13`` for
-  Ujjain, ``15`` for Nashik). The codes are *assigned*, never derived: they
-  come from the checked-in mapping (``app.core.city_codes`` and the LGD seed
-  data in ``data/geo/cities.csv``), not from a row id, a name or a position in
-  a list, and they never change once assigned;
+* **city code** - the checked-in RTO code for the city (``app.core.rto_codes``;
+  Delhi's municipal corporations use the explicit aliases in
+  ``app.services.rto_service``) - ``04`` for Bhopal, ``09`` for Indore, ``13``
+  for Ujjain, ``15`` for Nashik. This is the same code exposed by ``GET /geo``.
+  A city absent from the RTO map falls back to its stored
+  ``geo_cities.city_code``; an issued code never changes;
 * **sequence** - minimum three digits, zero padded, **per city**, so every
   city counts from ``001`` for itself. Past ``999`` the number simply grows
   (``MP091000``) - it is never truncated, reused or wrapped.
@@ -55,9 +55,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictException, ValidationException
-from app.core.rto_codes import get_rto_code
 from app.models.geo import GeoCity, GeoState
 from app.models.group import GroupIdCounter, MemberIdCounter, SocialGroup
+from app.services.rto_service import rto_code_for_city
 
 if TYPE_CHECKING:
     from app.models.member import Member
@@ -140,7 +140,10 @@ async def cities_for_state(session: AsyncSession, state: str) -> list[CityCode]:
             state=state_row.name,
             state_code=state_row.code,
             city=city.name,
-            city_code=city.city_code,
+            city_code=(
+                rto_code_for_city(state_row.code, city.name, city.lgd_code)
+                or city.city_code
+            ),
         )
         for city in result.scalars().all()
     ]
@@ -177,9 +180,9 @@ async def resolve_city(
     if len(matches) == 1:
         only = matches[0]
         # Prefer RTO code mapping: STATE + RTO_CODE(2 digits) + SEQ(3 digits)
-        rto_code = get_rto_code(state_row.code, only.name) or get_rto_code(
-            state_row.code, city
-        )
+        rto_code = rto_code_for_city(
+            state_row.code, only.name, only.lgd_code
+        ) or rto_code_for_city(state_row.code, city)
         if rto_code:
             return CityCode(
                 state=state_row.name,
