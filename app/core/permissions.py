@@ -69,6 +69,11 @@ class Permission:
     EVENT_UPDATE = "event.update"
     EVENT_DELETE = "event.delete"
 
+    JAIN_TIRTH_READ = "jain_tirth.read"
+    JAIN_TIRTH_CREATE = "jain_tirth.create"
+    JAIN_TIRTH_UPDATE = "jain_tirth.update"
+    JAIN_TIRTH_DELETE = "jain_tirth.delete"
+
     NEWS_READ = "news.read"
     NEWS_CREATE = "news.create"
     NEWS_PUBLISH = "news.publish"
@@ -126,6 +131,10 @@ ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
         Permission.EVENT_CREATE,
         Permission.EVENT_UPDATE,
         Permission.EVENT_DELETE,
+        Permission.JAIN_TIRTH_READ,
+        Permission.JAIN_TIRTH_CREATE,
+        Permission.JAIN_TIRTH_UPDATE,
+        Permission.JAIN_TIRTH_DELETE,
         Permission.NEWS_READ,
         Permission.NEWS_CREATE,
         Permission.NEWS_PUBLISH,
@@ -168,6 +177,9 @@ ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
         Permission.EVENT_READ,
         Permission.EVENT_CREATE,
         Permission.EVENT_UPDATE,
+        Permission.JAIN_TIRTH_READ,
+        Permission.JAIN_TIRTH_CREATE,
+        Permission.JAIN_TIRTH_UPDATE,
         Permission.NEWS_READ,
         Permission.NEWS_CREATE,
         Permission.NOTIFICATION_READ,
@@ -183,6 +195,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
         Permission.TRUSTEE_READ,
         Permission.LOCATION_READ,
         Permission.EVENT_READ,
+        Permission.JAIN_TIRTH_READ,
         Permission.NEWS_READ,
         Permission.NOTIFICATION_READ,
         Permission.ADVERTISEMENT_READ,

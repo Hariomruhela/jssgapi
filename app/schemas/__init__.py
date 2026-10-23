@@ -32,6 +32,13 @@ from app.schemas.group import (  # noqa: F401
     SocialGroupOut,
     SocialGroupUpdate,
 )
+from app.schemas.jain_tirth import (  # noqa: F401
+    JainTirthCreate,
+    JainTirthDetailOut,
+    JainTirthImageOut,
+    JainTirthOut,
+    JainTirthUpdate,
+)
 from app.schemas.location import (  # noqa: F401
     LocationCreate,
     LocationOut,

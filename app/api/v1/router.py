@@ -11,6 +11,7 @@ from app.api.v1.family import router as family_router
 from app.api.v1.fees import router as fees_router
 from app.api.v1.geo import router as geo_router
 from app.api.v1.groups import router as groups_router
+from app.api.v1.jain_tirths import router as jain_tirths_router
 from app.api.v1.locations import router as locations_router
 from app.api.v1.media import router as media_router
 from app.api.v1.members import router as members_router
@@ -36,6 +37,7 @@ for resource_router in [
     search_router,
     celebrations_router,
     trustees_router,
+    jain_tirths_router,
     events_router,
     news_router,
     notifications_router,

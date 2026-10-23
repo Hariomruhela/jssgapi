@@ -7,6 +7,12 @@ from app.repositories.event_repository import EventRepository  # noqa: F401
 from app.repositories.family_repository import FamilyMemberRepository  # noqa: F401
 from app.repositories.fee_repository import FeeRepository  # noqa: F401
 from app.repositories.group_repository import GroupRepository  # noqa: F401
+from app.repositories.jain_tirth_image_repository import (  # noqa: F401
+    JainTirthImageRepository,
+)
+from app.repositories.jain_tirth_repository import (  # noqa: F401
+    JainTirthRepository,
+)
 from app.repositories.location_repository import LocationRepository  # noqa: F401
 from app.repositories.media_repository import MediaRepository  # noqa: F401
 from app.repositories.member_repository import MemberRepository  # noqa: F401
