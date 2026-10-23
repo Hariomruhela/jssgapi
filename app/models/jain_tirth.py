@@ -20,6 +20,21 @@ class JainTirth(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    state: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    contact_person_name_1: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    contact_person_phone_1: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
+    contact_person_name_2: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    contact_person_phone_2: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
+    website_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     cover_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     cover_image_object_key: Mapped[str | None] = mapped_column(
         String(500), nullable=True
