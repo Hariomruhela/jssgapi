@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import String, and_, case, cast, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from app.core.constants import LEGACY_ROLE_ALIASES, RoleName
+from app.models.family import FamilyMember
 from app.models.group import SocialGroup
 from app.models.location import Location
 from app.models.member import Member
@@ -141,6 +142,175 @@ def designation_filter(designation: str | None = None):
     )
 
 
+def _build_member_search_expressions(query: str):
+    clean_q = query.strip()
+    if not clean_q:
+        return None, None
+
+    prefix = f"{clean_q}%"
+    contains = f"%{clean_q}%"
+    tokens = [t for t in clean_q.split() if t]
+
+    full_name_first_last = func.concat(
+        Member.first_name, " ", func.coalesce(Member.last_name, "")
+    )
+    full_name_with_middle = func.concat(
+        Member.first_name,
+        " ",
+        func.coalesce(Member.middle_name, ""),
+        " ",
+        func.coalesce(Member.last_name, ""),
+    )
+    full_name_last_first = func.concat(
+        Member.last_name, " ", func.coalesce(Member.first_name, "")
+    )
+
+    spouse_rel_types = ["spouse", "wife", "husband"]
+    spouse_name_exists = (
+        select(FamilyMember.id)
+        .where(
+            FamilyMember.member_id == Member.id,
+            func.lower(FamilyMember.relationship_type).in_(spouse_rel_types),
+            FamilyMember.name.ilike(contains),
+        )
+        .exists()
+    )
+    spouse_name_prefix_exists = (
+        select(FamilyMember.id)
+        .where(
+            FamilyMember.member_id == Member.id,
+            func.lower(FamilyMember.relationship_type).in_(spouse_rel_types),
+            FamilyMember.name.ilike(prefix),
+        )
+        .exists()
+    )
+    spouse_phone_exists = (
+        select(FamilyMember.id)
+        .where(
+            FamilyMember.member_id == Member.id,
+            func.lower(FamilyMember.relationship_type).in_(spouse_rel_types),
+            FamilyMember.contact_phone.ilike(contains),
+        )
+        .exists()
+    )
+
+    single_field_conditions = [
+        Member.first_name.ilike(contains),
+        Member.middle_name.ilike(contains),
+        Member.last_name.ilike(contains),
+        full_name_first_last.ilike(contains),
+        full_name_with_middle.ilike(contains),
+        full_name_last_first.ilike(contains),
+        Member.profile_data["full_name"].astext.ilike(contains),
+        Member.contact_email.ilike(contains),
+        Member.contact_phone.ilike(contains),
+        Member.membership_number.ilike(contains),
+        Member.address_line.ilike(contains),
+        Member.occupation_summary.ilike(contains),
+        # Spouse fields
+        Member.profile_data["spouse_name"].astext.ilike(contains),
+        Member.profile_data["spouse_mobile"].astext.ilike(contains),
+        spouse_name_exists,
+        spouse_phone_exists,
+        # Location fields (City, State, Area, Name)
+        Location.name.ilike(contains),
+        Location.city.ilike(contains),
+        Location.state.ilike(contains),
+        Location.area.ilike(contains),
+        Member.profile_data["city"].astext.ilike(contains),
+        Member.profile_data["state"].astext.ilike(contains),
+        Member.profile_data["area"].astext.ilike(contains),
+        Member.profile_data["address"].astext.ilike(contains),
+        # Social Group
+        SocialGroup.name.ilike(contains),
+        SocialGroup.name_hi.ilike(contains),
+        Member.profile_data["social_group_name"].astext.ilike(contains),
+        # Occupation / Education
+        Member.profile_data["member_occupation"].astext.ilike(contains),
+        Member.profile_data["member_education"].astext.ilike(contains),
+        Member.profile_data["company_name"].astext.ilike(contains),
+        # Member ID & Group ID prefix / contains
+        cast(Member.id, String).ilike(f"{clean_q}%"),
+        cast(Member.group_id, String).ilike(f"{clean_q}%"),
+    ]
+
+    if is_valid_uuid(clean_q):
+        parsed_uuid = UUID(clean_q)
+        single_field_conditions.extend([
+            Member.id == parsed_uuid,
+            Member.group_id == parsed_uuid,
+        ])
+
+    single_needle_match = or_(*single_field_conditions)
+
+    if len(tokens) > 1:
+        token_clauses = []
+        for t in tokens:
+            t_contains = f"%{t}%"
+            t_spouse_exists = (
+                select(FamilyMember.id)
+                .where(
+                    FamilyMember.member_id == Member.id,
+                    func.lower(FamilyMember.relationship_type).in_(spouse_rel_types),
+                    FamilyMember.name.ilike(t_contains),
+                )
+                .exists()
+            )
+            t_cond = or_(
+                Member.first_name.ilike(t_contains),
+                Member.middle_name.ilike(t_contains),
+                Member.last_name.ilike(t_contains),
+                Member.profile_data["full_name"].astext.ilike(t_contains),
+                Member.profile_data["spouse_name"].astext.ilike(t_contains),
+                t_spouse_exists,
+                Location.city.ilike(t_contains),
+                Location.state.ilike(t_contains),
+                Location.name.ilike(t_contains),
+                Member.profile_data["city"].astext.ilike(t_contains),
+                Member.profile_data["state"].astext.ilike(t_contains),
+                SocialGroup.name.ilike(t_contains),
+                Member.profile_data["social_group_name"].astext.ilike(t_contains),
+                Member.contact_phone.ilike(t_contains),
+                Member.membership_number.ilike(t_contains),
+                Member.contact_email.ilike(t_contains),
+            )
+            token_clauses.append(t_cond)
+        where_condition = or_(single_needle_match, and_(*token_clauses))
+    else:
+        where_condition = single_needle_match
+
+    rank_expr = case(
+        (Member.first_name.ilike(clean_q), 1),
+        (Member.first_name.ilike(prefix), 2),
+        (Member.last_name.ilike(prefix), 3),
+        (full_name_first_last.ilike(prefix), 4),
+        (Member.profile_data["spouse_name"].astext.ilike(prefix), 5),
+        (spouse_name_prefix_exists, 5),
+        (Location.city.ilike(prefix), 6),
+        (Member.profile_data["city"].astext.ilike(prefix), 6),
+        (Location.state.ilike(prefix), 7),
+        (Member.profile_data["state"].astext.ilike(prefix), 7),
+        (SocialGroup.name.ilike(prefix), 8),
+        (Member.profile_data["social_group_name"].astext.ilike(prefix), 8),
+        (Member.first_name.ilike(contains), 9),
+        (Member.last_name.ilike(contains), 10),
+        (full_name_first_last.ilike(contains), 11),
+        (Member.profile_data["spouse_name"].astext.ilike(contains), 12),
+        (spouse_name_exists, 12),
+        (Location.city.ilike(contains), 13),
+        (Member.profile_data["city"].astext.ilike(contains), 13),
+        (Location.state.ilike(contains), 14),
+        (SocialGroup.name.ilike(contains), 15),
+        (Member.membership_number.ilike(prefix), 16),
+        (Member.contact_phone.ilike(prefix), 17),
+        (Member.membership_number.ilike(contains), 18),
+        (Member.contact_phone.ilike(contains), 19),
+        else_=30,
+    )
+
+    return where_condition, rank_expr
+
+
 class MemberRepository(BaseRepository[Member]):
     model = Member
 
@@ -191,23 +361,16 @@ class MemberRepository(BaseRepository[Member]):
         limit: int = 50,
         offset: int = 0,
     ) -> list[Member]:
-        term = f"%{query}%"
+        where_cond, rank_expr = _build_member_search_expressions(query)
         stmt = (
             select(Member)
+            .outerjoin(Location, Location.id == Member.location_id)
+            .outerjoin(SocialGroup, SocialGroup.id == Member.group_id)
             .options(*MEMBER_PROFILE_LOADS)
-            .where(
-                Member.is_deleted.is_(False),
-                or_(
-                    Member.first_name.ilike(term),
-                    Member.last_name.ilike(term),
-                    Member.contact_email.ilike(term),
-                    Member.contact_phone.ilike(term),
-                    Member.membership_number.ilike(term),
-                ),
-            )
+            .where(Member.is_deleted.is_(False))
         )
-        # The caller-supplied filters must apply to a search too. Returning every
-        # match regardless of group is how a search would leak across groups.
+        if where_cond is not None:
+            stmt = stmt.where(where_cond)
         if group_id is not None:
             stmt = stmt.where(Member.group_id == group_id)
         if membership_status is not None:
@@ -218,9 +381,15 @@ class MemberRepository(BaseRepository[Member]):
             stmt = stmt.where(trustee_role_filter())
         if (designation or "").strip():
             stmt = stmt.where(designation_filter(designation.strip()))
-        result = await self.session.execute(
-            stmt.order_by(Member.first_name).limit(limit).offset(offset)
-        )
+
+        if rank_expr is not None:
+            stmt = stmt.order_by(
+                rank_expr.asc(), Member.first_name.asc(), Member.last_name.asc()
+            )
+        else:
+            stmt = stmt.order_by(Member.first_name.asc(), Member.last_name.asc())
+
+        result = await self.session.execute(stmt.limit(limit).offset(offset))
         return list(result.scalars().all())
 
     async def search_detailed(
@@ -236,58 +405,22 @@ class MemberRepository(BaseRepository[Member]):
     ) -> tuple[list[Member], int]:
         """Keyword search across every member field, plus the total count.
 
-        Matches the member's own columns, every profile field kept in
-        ``profile_data``, the linked group's name and the linked location. A
-        UUID keyword also matches the row id, so an id pasted into the search
-        box resolves the member directly. The caller-supplied filters narrow the
-        result exactly as they do a listing - a search must never widen scope.
+        Matches the member's own columns, full name combinations, spouse name,
+        linked group, linked location (city, state), phone, membership number,
+        and profile fields. Natural ranking prioritizes exact/prefix name matches.
         """
-        term = f"%{query}%"
+        where_cond, rank_expr = _build_member_search_expressions(query)
         location_needle = f"%{location}%" if location else None
-        conditions = [
-            Member.first_name.ilike(term),
-            Member.middle_name.ilike(term),
-            Member.last_name.ilike(term),
-            Member.contact_email.ilike(term),
-            Member.contact_phone.ilike(term),
-            Member.address_line.ilike(term),
-            Member.occupation_summary.ilike(term),
-            Member.membership_number.ilike(term),
-            Member.blood_group.ilike(term),
-            Member.gender.ilike(term),
-            Member.membership_status.ilike(term),
-            Member.profile_data["full_name"].astext.ilike(term),
-            Member.profile_data["city"].astext.ilike(term),
-            Member.profile_data["area"].astext.ilike(term),
-            Member.profile_data["address"].astext.ilike(term),
-            Member.profile_data["social_group_name"].astext.ilike(term),
-            Member.profile_data["member_occupation"].astext.ilike(term),
-            Member.profile_data["member_education"].astext.ilike(term),
-            Member.profile_data["company_name"].astext.ilike(term),
-            Member.group_id.in_(
-                select(SocialGroup.id).where(
-                    SocialGroup.is_deleted.is_(False),
-                    SocialGroup.name.ilike(term),
-                )
-            ),
-            Member.location_id.in_(
-                select(Location.id).where(
-                    or_(
-                        Location.name.ilike(term),
-                        Location.city.ilike(term),
-                        Location.area.ilike(term),
-                    )
-                )
-            ),
-        ]
-        if is_valid_uuid(query):
-            conditions.append(Member.id == UUID(query))
 
         stmt = (
             select(Member)
+            .outerjoin(Location, Location.id == Member.location_id)
+            .outerjoin(SocialGroup, SocialGroup.id == Member.group_id)
             .options(*MEMBER_PROFILE_LOADS)
-            .where(Member.is_deleted.is_(False), or_(*conditions))
+            .where(Member.is_deleted.is_(False))
         )
+        if where_cond is not None:
+            stmt = stmt.where(where_cond)
         if group_id is not None:
             stmt = stmt.where(Member.group_id == group_id)
         if member_id is not None:
@@ -298,14 +431,14 @@ class MemberRepository(BaseRepository[Member]):
             stmt = stmt.where(group_name_filter(group_name))
         if location_needle is not None:
             stmt = stmt.where(
-                Member.location_id.in_(
-                    select(Location.id).where(
-                        or_(
-                            Location.name.ilike(location_needle),
-                            Location.city.ilike(location_needle),
-                            Location.area.ilike(location_needle),
-                        )
-                    )
+                or_(
+                    Location.name.ilike(location_needle),
+                    Location.city.ilike(location_needle),
+                    Location.area.ilike(location_needle),
+                    Location.state.ilike(location_needle),
+                    Member.profile_data["city"].astext.ilike(location_needle),
+                    Member.profile_data["state"].astext.ilike(location_needle),
+                    Member.profile_data["area"].astext.ilike(location_needle),
                 )
             )
 
@@ -314,7 +447,13 @@ class MemberRepository(BaseRepository[Member]):
                 select(func.count()).select_from(stmt.subquery())
             )
         ).scalar_one()
-        result = await self.session.execute(
-            stmt.order_by(Member.first_name).limit(limit).offset(offset)
-        )
+
+        if rank_expr is not None:
+            stmt = stmt.order_by(
+                rank_expr.asc(), Member.first_name.asc(), Member.last_name.asc()
+            )
+        else:
+            stmt = stmt.order_by(Member.first_name.asc(), Member.last_name.asc())
+
+        result = await self.session.execute(stmt.limit(limit).offset(offset))
         return list(result.scalars().all()), int(total)

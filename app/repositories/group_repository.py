@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import String, and_, case, cast, func, or_, select, update
 
 from app.models.fee import Fee
 from app.models.group import SocialGroup
@@ -41,21 +41,40 @@ class GroupRepository(BaseRepository[SocialGroup]):
         limit: int = 50,
         offset: int = 0,
     ) -> list[SocialGroup]:
-        term = f"%{query}%"
+        clean_q = query.strip()
+        prefix = f"{clean_q}%"
+        contains = f"%{clean_q}%"
+        conds = [
+            SocialGroup.name.ilike(contains),
+            SocialGroup.name_hi.ilike(contains),
+            cast(SocialGroup.id, String).ilike(f"{clean_q}%"),
+        ]
+        if is_valid_uuid(clean_q):
+            conds.append(SocialGroup.id == uuid.UUID(clean_q))
+
+        rank_expr = case(
+            (SocialGroup.name.ilike(clean_q), 1),
+            (SocialGroup.name.ilike(prefix), 2),
+            (SocialGroup.name_hi.ilike(prefix), 3),
+            (SocialGroup.name.ilike(contains), 4),
+            else_=10,
+        )
         stmt = (
             select(SocialGroup)
             .where(
                 SocialGroup.is_deleted.is_(False),
-                or_(SocialGroup.name.ilike(term), SocialGroup.name_hi.ilike(term)),
+                or_(*conds),
             )
-            .order_by(SocialGroup.name)
-            .limit(limit)
-            .offset(offset)
         )
         # Scope must narrow a search as well as a listing, otherwise searching by
         # name leaks groups the caller is not allowed to see.
         if group_id is not None:
             stmt = stmt.where(SocialGroup.id == group_id)
+        stmt = (
+            stmt.order_by(rank_expr.asc(), SocialGroup.name.asc())
+            .limit(limit)
+            .offset(offset)
+        )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -71,13 +90,13 @@ class GroupRepository(BaseRepository[SocialGroup]):
         """Keyword search across a group's own fields, its location and members.
 
         A group matches when the keyword appears in its name/description/contact
-        details, in its linked location, or in any of its members - so searching
-        a person's name returns the groups that person belongs to. Each hit
-        carries the location name and the live member count for display. A UUID
-        keyword also matches the group id. ``group_id``/``status``/``location``
-        narrow the result; scope is passed as ``group_id`` by the caller.
+        details, in its linked location, or in any of its members. Natural ranking
+        prioritizes prefix matches on group name and location.
         """
-        term = f"%{query}%"
+        clean_q = query.strip()
+        prefix = f"{clean_q}%"
+        contains = f"%{clean_q}%"
+        tokens = [t for t in clean_q.split() if t]
         location_needle = f"%{location}%" if location else None
 
         member_match = (
@@ -86,15 +105,15 @@ class GroupRepository(BaseRepository[SocialGroup]):
                 Member.group_id == SocialGroup.id,
                 Member.is_deleted.is_(False),
                 or_(
-                    Member.first_name.ilike(term),
-                    Member.middle_name.ilike(term),
-                    Member.last_name.ilike(term),
-                    Member.membership_number.ilike(term),
-                    Member.contact_email.ilike(term),
-                    Member.contact_phone.ilike(term),
-                    Member.profile_data["full_name"].astext.ilike(term),
-                    Member.profile_data["city"].astext.ilike(term),
-                    Member.profile_data["area"].astext.ilike(term),
+                    Member.first_name.ilike(contains),
+                    Member.middle_name.ilike(contains),
+                    Member.last_name.ilike(contains),
+                    Member.membership_number.ilike(contains),
+                    Member.contact_email.ilike(contains),
+                    Member.contact_phone.ilike(contains),
+                    Member.profile_data["full_name"].astext.ilike(contains),
+                    Member.profile_data["city"].astext.ilike(contains),
+                    Member.profile_data["area"].astext.ilike(contains),
                 ),
             )
             .correlate(SocialGroup)
@@ -103,28 +122,70 @@ class GroupRepository(BaseRepository[SocialGroup]):
         location_match = SocialGroup.location_id.in_(
             select(Location.id).where(
                 or_(
-                    Location.name.ilike(term),
-                    Location.city.ilike(term),
-                    Location.area.ilike(term),
-                    Location.state.ilike(term),
-                    Location.pincode.ilike(term),
+                    Location.name.ilike(contains),
+                    Location.city.ilike(contains),
+                    Location.area.ilike(contains),
+                    Location.state.ilike(contains),
+                    Location.pincode.ilike(contains),
                 )
             )
         )
         conditions = [
-            SocialGroup.name.ilike(term),
-            SocialGroup.name_hi.ilike(term),
-            SocialGroup.description.ilike(term),
-            SocialGroup.address.ilike(term),
-            SocialGroup.contact_name.ilike(term),
-            SocialGroup.contact_email.ilike(term),
-            SocialGroup.contact_phone.ilike(term),
-            SocialGroup.status.ilike(term),
+            SocialGroup.name.ilike(contains),
+            SocialGroup.name_hi.ilike(contains),
+            SocialGroup.description.ilike(contains),
+            SocialGroup.address.ilike(contains),
+            SocialGroup.contact_name.ilike(contains),
+            SocialGroup.contact_email.ilike(contains),
+            SocialGroup.contact_phone.ilike(contains),
+            cast(SocialGroup.id, String).ilike(f"{clean_q}%"),
             location_match,
             member_match,
         ]
-        if is_valid_uuid(query):
-            conditions.append(SocialGroup.id == uuid.UUID(query))
+        if is_valid_uuid(clean_q):
+            conditions.append(SocialGroup.id == uuid.UUID(clean_q))
+
+        single_needle_match = or_(*conditions)
+
+        if len(tokens) > 1:
+            token_clauses = []
+            for t in tokens:
+                t_contains = f"%{t}%"
+                t_member_match = (
+                    select(Member.id)
+                    .where(
+                        Member.group_id == SocialGroup.id,
+                        Member.is_deleted.is_(False),
+                        or_(
+                            Member.first_name.ilike(t_contains),
+                            Member.last_name.ilike(t_contains),
+                            Member.profile_data["full_name"].astext.ilike(t_contains),
+                        ),
+                    )
+                    .correlate(SocialGroup)
+                    .exists()
+                )
+                t_loc_match = SocialGroup.location_id.in_(
+                    select(Location.id).where(
+                        or_(
+                            Location.name.ilike(t_contains),
+                            Location.city.ilike(t_contains),
+                            Location.state.ilike(t_contains),
+                        )
+                    )
+                )
+                token_clauses.append(
+                    or_(
+                        SocialGroup.name.ilike(t_contains),
+                        SocialGroup.name_hi.ilike(t_contains),
+                        SocialGroup.description.ilike(t_contains),
+                        t_loc_match,
+                        t_member_match,
+                    )
+                )
+            where_condition = or_(single_needle_match, and_(*token_clauses))
+        else:
+            where_condition = single_needle_match
 
         member_count = (
             select(func.count(Member.id))
@@ -135,7 +196,7 @@ class GroupRepository(BaseRepository[SocialGroup]):
         stmt = (
             select(SocialGroup, Location.name, member_count)
             .outerjoin(Location, Location.id == SocialGroup.location_id)
-            .where(SocialGroup.is_deleted.is_(False), or_(*conditions))
+            .where(SocialGroup.is_deleted.is_(False), where_condition)
         )
         if group_id is not None:
             stmt = stmt.where(SocialGroup.id == group_id)
@@ -159,10 +220,27 @@ class GroupRepository(BaseRepository[SocialGroup]):
                 select(func.count()).select_from(stmt.subquery())
             )
         ).scalar_one()
+
+        rank_expr = case(
+            (SocialGroup.name.ilike(clean_q), 1),
+            (SocialGroup.name.ilike(prefix), 2),
+            (SocialGroup.name_hi.ilike(prefix), 3),
+            (Location.city.ilike(prefix), 4),
+            (Location.name.ilike(prefix), 5),
+            (SocialGroup.name.ilike(contains), 6),
+            (SocialGroup.name_hi.ilike(contains), 7),
+            (Location.city.ilike(contains), 8),
+            (cast(SocialGroup.id, String).ilike(prefix), 9),
+            else_=20,
+        )
+
         result = await self.session.execute(
-            stmt.order_by(SocialGroup.name).limit(limit).offset(offset)
+            stmt.order_by(rank_expr.asc(), SocialGroup.name.asc())
+            .limit(limit)
+            .offset(offset)
         )
         rows = [(row[0], row[1], int(row[2] or 0)) for row in result.all()]
+        return rows, int(total)
         return rows, int(total)
 
     async def get_by_name(self, name: str) -> SocialGroup | None:

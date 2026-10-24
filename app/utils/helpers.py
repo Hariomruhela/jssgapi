@@ -34,7 +34,7 @@ def financial_year_for(date_value: datetime | None = None) -> str:
 
 
 def sanitize_search_query(query: str) -> str:
-    cleaned = re.sub(r"[^\w\s@.-]", "", query).strip()
+    cleaned = re.sub(r"[^\w\s@.+-]", "", query).strip()
     return cleaned[:200]
 
 
