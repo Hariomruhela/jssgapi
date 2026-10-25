@@ -223,7 +223,6 @@ def _build_member_search_expressions(query: str):
         Member.profile_data["address"].astext.ilike(contains),
         # Social Group
         SocialGroup.name.ilike(contains),
-        SocialGroup.name_hi.ilike(contains),
         Member.profile_data["social_group_name"].astext.ilike(contains),
         # Occupation / Education
         Member.profile_data["member_occupation"].astext.ilike(contains),

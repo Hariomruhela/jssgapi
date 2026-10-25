@@ -46,7 +46,6 @@ class GroupRepository(BaseRepository[SocialGroup]):
         contains = f"%{clean_q}%"
         conds = [
             SocialGroup.name.ilike(contains),
-            SocialGroup.name_hi.ilike(contains),
             cast(SocialGroup.id, String).ilike(f"{clean_q}%"),
         ]
         if is_valid_uuid(clean_q):
@@ -55,7 +54,6 @@ class GroupRepository(BaseRepository[SocialGroup]):
         rank_expr = case(
             (SocialGroup.name.ilike(clean_q), 1),
             (SocialGroup.name.ilike(prefix), 2),
-            (SocialGroup.name_hi.ilike(prefix), 3),
             (SocialGroup.name.ilike(contains), 4),
             else_=10,
         )
@@ -132,7 +130,6 @@ class GroupRepository(BaseRepository[SocialGroup]):
         )
         conditions = [
             SocialGroup.name.ilike(contains),
-            SocialGroup.name_hi.ilike(contains),
             SocialGroup.description.ilike(contains),
             SocialGroup.address.ilike(contains),
             SocialGroup.contact_name.ilike(contains),
@@ -177,7 +174,6 @@ class GroupRepository(BaseRepository[SocialGroup]):
                 token_clauses.append(
                     or_(
                         SocialGroup.name.ilike(t_contains),
-                        SocialGroup.name_hi.ilike(t_contains),
                         SocialGroup.description.ilike(t_contains),
                         t_loc_match,
                         t_member_match,
@@ -224,11 +220,9 @@ class GroupRepository(BaseRepository[SocialGroup]):
         rank_expr = case(
             (SocialGroup.name.ilike(clean_q), 1),
             (SocialGroup.name.ilike(prefix), 2),
-            (SocialGroup.name_hi.ilike(prefix), 3),
             (Location.city.ilike(prefix), 4),
             (Location.name.ilike(prefix), 5),
             (SocialGroup.name.ilike(contains), 6),
-            (SocialGroup.name_hi.ilike(contains), 7),
             (Location.city.ilike(contains), 8),
             (cast(SocialGroup.id, String).ilike(prefix), 9),
             else_=20,
