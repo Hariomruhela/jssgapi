@@ -338,6 +338,20 @@ class MemberRepository(BaseRepository[Member]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_phone(self, phone: str) -> Member | None:
+        normalized = phone.strip()
+        local = normalized.removeprefix("+91")
+        conditions = [Member.contact_phone == normalized]
+        if local != normalized:
+            conditions.append(Member.contact_phone == local)
+        result = await self.session.execute(
+            select(Member).where(
+                Member.is_deleted.is_(False),
+                or_(*conditions),
+            )
+        )
+        return result.scalars().first()
+
     async def list_by_group(
         self, group_id, limit: int = 100, offset: int = 0
     ) -> list[Member]:

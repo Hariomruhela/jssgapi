@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from app.core.constants import AuditAction, RoleName, resolve_role_name
+from app.core.constants import AuditAction, MemberStatus, RoleName, resolve_role_name
 from app.core.exceptions import (
     BadRequestException,
     ConflictException,
@@ -41,8 +41,15 @@ from app.schemas.group import (
     SocialGroupUpdate,
 )
 from app.services.audit_service import AuditService
-from app.services.group_id_service import assign_member_id, next_group_id, resolve_city
+from app.services.group_id_service import (
+    _is_membership_number_violation,
+    assign_member_id,
+    next_group_id,
+    next_member_id,
+    resolve_city,
+)
 from app.services.sheet_groups_service import read_sheet_groups
+from app.utils.helpers import split_full_name
 from app.utils.validators import normalize_phone_number
 
 router = APIRouter(prefix="/groups", tags=["Groups"])
@@ -92,22 +99,24 @@ async def _get_user_by_phone_forms(
 async def _assign_default_group_admin(
     db, group: SocialGroup, admin_name: str, admin_phone_number: str
 ) -> User:
-    """Create or reuse the phone's account and make it this group's admin.
+    """Create or promote the admin account and create/link its member record in the group.
 
-    A phone that already belongs to an active account is promoted instead of
-    duplicated; the entered name is used only for a newly created account. This
-    mirrors ``POST /groups/{id}/admins``: ``User.group_id`` becomes the scope,
-    so a reassigned account is no longer an admin of its previous group.
+    When an account with this phone number already exists, it is promoted to
+    GROUP_ADMIN and linked to the group. Otherwise, a new account is created.
+    The admin receives role GROUP_ADMIN, member status APPROVED, and a sequential
+    member ID for this group.
     """
     role = await _resolve_role(db, RoleName.GROUP_ADMIN.value)
     normalized = normalize_phone_number(admin_phone_number)
     user_repo = UserRepository(db)
-    user = await _get_user_by_phone_forms(user_repo, normalized)
+    member_repo = MemberRepository(db)
 
+    user = await _get_user_by_phone_forms(user_repo, normalized)
+    is_new_user = user is None
     if user is None:
         user = await user_repo.create(
             phone_number=normalized,
-            full_name=admin_name,
+            full_name=admin_name.strip(),
             # NOT NULL column: OTP/Firebase login is how this account signs in,
             # so the password stays unknowable.
             password_hash=hash_password(secrets.token_urlsafe(32)),
@@ -115,34 +124,12 @@ async def _assign_default_group_admin(
             role_id=role.id,
             group_id=group.id,
         )
-        await AuditService(db).log(
-            AuditAction.ROLE_CHANGE,
-            entity_type="user",
-            entity_id=user.id,
-            details={
-                "role": role.name,
-                "group_id": str(group.id),
-                "source": "group_create",
-                "created": True,
-            },
-        )
-        return user
+    else:
+        user.role_id = role.id
+        user.group_id = group.id
+        await db.flush()
+        await db.refresh(user)
 
-    if not user.is_active:
-        raise BadRequestException("Cannot assign an inactive account as a Group Admin")
-
-    already_admin = (
-        user.group_id == group.id
-        and user.role is not None
-        and resolve_role_name(user.role.name) is RoleName.GROUP_ADMIN
-    )
-    if already_admin:
-        return user
-
-    user.role_id = role.id
-    user.group_id = group.id
-    await db.flush()
-    await db.refresh(user)
     await AuditService(db).log(
         AuditAction.ROLE_CHANGE,
         entity_type="user",
@@ -151,6 +138,50 @@ async def _assign_default_group_admin(
             "role": role.name,
             "group_id": str(group.id),
             "source": "group_create",
+            "created": is_new_user,
+        },
+    )
+
+    member = await member_repo.get_by_user_id(user.id)
+    if member is None and user.phone_number:
+        member = await member_repo.get_by_phone(user.phone_number)
+
+    if member is None:
+        first_name, last_name = split_full_name(user.full_name)
+        membership_number = (
+            await next_member_id(db, group.group_id) if group.group_id else None
+        )
+        member = await member_repo.create(
+            user_id=user.id,
+            group_id=group.id,
+            first_name=first_name,
+            last_name=last_name or "",
+            contact_phone=user.phone_number or normalized,
+            membership_number=membership_number,
+            membership_status=MemberStatus.APPROVED.value,
+            is_profile_complete=False,
+            profile_data={
+                "full_name": user.full_name,
+                "contact_phone": user.phone_number or normalized,
+                "social_group_name": group.name,
+                "city": group.city,
+                "state": group.state,
+            },
+        )
+    else:
+        member.user_id = user.id
+        member.group_id = group.id
+        member.membership_status = MemberStatus.APPROVED.value
+
+    await assign_member_id(db, member, group)
+    await AuditService(db).log(
+        AuditAction.MEMBER_CREATE if is_new_user else AuditAction.GROUP_UPDATE,
+        entity_type="member",
+        entity_id=member.id,
+        details={
+            "group_id": str(group.id),
+            "source": "group_create_admin",
+            "membership_status": MemberStatus.APPROVED.value,
         },
     )
     return user
@@ -292,11 +323,19 @@ async def create_group(body: SocialGroupCreate, db: DBSession):
                 "Could not allocate a unique Group ID for this city; "
                 "retry the request."
             ) from exc
+        if _is_membership_number_violation(exc):
+            raise ConflictException(
+                "Could not allocate a unique member ID for this group; "
+                "retry the request."
+            ) from exc
         if "phone_number" in str(exc):
             raise ConflictException(
                 "An account with this phone number already exists; retry "
                 "the request."
             ) from exc
+        raise
+    except Exception:
+        await db.rollback()
         raise
     if body.admin_name is not None:
         await db.refresh(group, ["admins"])
@@ -414,6 +453,36 @@ async def assign_group_admin(group_id: UUID, body: GroupAdminAssignment, db: DBS
     user.group_id = group_id
     await db.flush()
     await db.refresh(user)
+
+    member_repo = MemberRepository(db)
+    member = await member_repo.get_by_user_id(user.id)
+    if member is None and user.phone_number:
+        member = await member_repo.get_by_phone(user.phone_number)
+    if member is None:
+        first_name, last_name = split_full_name(user.full_name)
+        member = await member_repo.create(
+            user_id=user.id,
+            group_id=group_id,
+            first_name=first_name,
+            last_name=last_name or "",
+            contact_phone=user.phone_number,
+            contact_email=user.email,
+            membership_status=MemberStatus.APPROVED.value,
+            is_profile_complete=False,
+            profile_data={
+                "full_name": user.full_name,
+                "contact_phone": user.phone_number,
+                "social_group_name": group.name,
+                "city": group.city,
+                "state": group.state,
+            },
+        )
+    else:
+        member.user_id = user.id
+        member.group_id = group_id
+        member.membership_status = MemberStatus.APPROVED.value
+    await assign_member_id(db, member, group)
+
     await AuditService(db).log(
         AuditAction.ROLE_CHANGE,
         entity_type="user",

@@ -345,8 +345,16 @@ async def update_member(
     await assert_group_access(db, current_user, member.group_id)
     if body.group_id is not None:
         await assert_group_access(db, current_user, body.group_id)
+    old_group_id = member.group_id
     columns = body.member_columns()
     member = await repo.update(member, **columns)
+    needs_member_id = member.group_id is not None and (
+        member.group_id != old_group_id or not member.membership_number
+    )
+    if needs_member_id:
+        target_group = await db.get(SocialGroup, member.group_id)
+        if target_group is not None:
+            await assign_member_id(db, member, target_group)
     # Profile fields live in ``members.profile_data``; a Group Admin has no access to
     # ``PUT /profile`` (that writes the caller's own profile), so the admin edit path
     # must write them too or the panel could never maintain a full member profile.

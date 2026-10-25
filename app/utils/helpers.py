@@ -45,3 +45,13 @@ def mask_email(email: str) -> str:
         return f"{masked}@{domain}"
     except ValueError:
         return email
+
+
+def split_full_name(full_name: str) -> tuple[str, str]:
+    parts = full_name.split()
+    if not parts:
+        return full_name, ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[-1]
+

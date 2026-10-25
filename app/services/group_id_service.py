@@ -47,7 +47,6 @@ and an old number is never reissued.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -57,10 +56,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ConflictException, ValidationException
 from app.models.geo import GeoCity, GeoState
 from app.models.group import GroupIdCounter, MemberIdCounter, SocialGroup
+from app.models.member import Member
 from app.services.rto_service import rto_code_for_city
-
-if TYPE_CHECKING:
-    from app.models.member import Member
 
 #: Sequences are zero padded to at least this many digits.
 SEQUENCE_WIDTH = 3
@@ -311,6 +308,41 @@ def format_group_id(prefix: str, sequence: int) -> str:
 # --- member IDs (members.membership_number) ---------------------------------
 
 
+async def _highest_stored_member_sequence(
+    session: AsyncSession, group_id: str
+) -> int:
+    """Find the highest integer sequence this group's members already carry."""
+    remainder = func.substr(Member.membership_number, len(group_id) + 1)
+    result = await session.execute(
+        select(func.max(cast(remainder, Integer))).where(
+            Member.membership_number.like(f"{group_id}%"),
+            remainder.op("~")("^[0-9]+$"),
+        )
+    )
+    return int(result.scalar() or 0)
+
+
+async def _raise_member_counter_to_stored_highest(
+    session: AsyncSession, group_id: str
+) -> None:
+    """Never let the member counter fall behind the IDs the group already carries."""
+    highest = await _highest_stored_member_sequence(session, group_id)
+    if not highest:
+        return
+    await session.execute(
+        pg_insert(MemberIdCounter)
+        .values(group_id=group_id, last_value=highest)
+        .on_conflict_do_update(
+            index_elements=[MemberIdCounter.group_id],
+            set_={
+                "last_value": func.greatest(
+                    MemberIdCounter.last_value, highest
+                )
+            },
+        )
+    )
+
+
 async def next_member_sequence(session: AsyncSession, group_id: str) -> int:
     """Atomically claim the next member sequence inside one group.
 
@@ -319,6 +351,7 @@ async def next_member_sequence(session: AsyncSession, group_id: str) -> int:
     the ``member_id_counters`` primary key, and a rolled-back request returns
     its number because the increment rolls back with the transaction.
     """
+    await _raise_member_counter_to_stored_highest(session, group_id)
     statement = (
         pg_insert(MemberIdCounter)
         .values(group_id=group_id, last_value=1)
