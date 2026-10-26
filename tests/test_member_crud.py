@@ -203,6 +203,7 @@ def _create_member(client: TestClient, auth: dict, **overrides) -> dict:
         "company_business_name": "Verma Traders",
         "interest_field_of_social_activities": "Reading, Cricket",
         "business_address": "42 Market Road, Indore",
+        "business_designation": "Partner",
         "member_photo_url": "https://drive.example/member.jpg",
         "unmarried_son1_details": "Rohit Verma",
         "unmarried_son2_details": "Karan Verma",
@@ -244,6 +245,7 @@ def test_create_member_accepts_the_spec_field_names(client, auth):
     assert member["company_name"] == "Verma Traders"
     assert member["interest_fields"] == "Reading, Cricket"
     assert member["business_address"] == "42 Market Road, Indore"
+    assert member["business_designation"] == "Partner"
     assert member["member_photo_link"] == "https://drive.example/member.jpg"
     assert member["profile_photo_url"] == "https://drive.example/member.jpg"
     assert member["unmarried_son1_details"] == "Rohit Verma"
@@ -274,6 +276,7 @@ def test_get_member_returns_the_profile_fields_too(client, auth):
     assert data["id"] == member["id"]
     assert data["phone_number"] == "9811111111"
     assert data["city"] == "Indore"
+    assert data["business_designation"] == "Partner"
     assert data["family_member_count"] == "4"
     assert data["unmarried_son2_details"] == "Karan Verma"
 
@@ -294,6 +297,7 @@ def test_patch_updates_only_the_fields_it_is_sent(client, auth):
     assert data["phone_number"] == "9811111111"
     assert data["company_name"] == "Verma Traders"
     assert data["business_address"] == "42 Market Road, Indore"
+    assert data["business_designation"] == "Partner"
     assert data["family_member_count"] == "4"
 
 

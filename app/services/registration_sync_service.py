@@ -269,6 +269,12 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "office address",
         "company address",
     ),
+    "business_designation": (
+        "business designation",
+        "business position",
+        "company designation",
+        "designation at business",
+    ),
     "spouse_education": (
         "spouse educational qualification",
         "spouse education",

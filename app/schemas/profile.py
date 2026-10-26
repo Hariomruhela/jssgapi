@@ -73,6 +73,7 @@ class ProfileUpdate(BaseModel):
         ),
     )
     business_address: str | None = None
+    business_designation: str | None = None
     address: str | None = None
     city: str | None = None
     area: str | None = None
