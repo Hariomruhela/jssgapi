@@ -28,7 +28,6 @@ class SocialGroupCreate(BaseModel):
     """
 
     name: str
-    name_hi: str | None = None
     description: str | None = None
     contact_name: str | None = None
     contact_email: str | None = None
@@ -93,7 +92,6 @@ class SocialGroupUpdate(BaseModel):
     """
 
     name: str | None = None
-    name_hi: str | None = None
     description: str | None = None
     contact_name: str | None = None
     contact_email: str | None = None
@@ -126,7 +124,6 @@ class SocialGroupOut(BaseModel):
     name: str
     state: str | None = None
     city: str | None = None
-    name_hi: str | None = None
     description: str | None = None
     contact_name: str | None = None
     contact_email: str | None = None
