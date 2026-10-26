@@ -18,7 +18,14 @@ from app.dependencies import CurrentUser, DBSession, require_permission
 from app.models.user import Role, User
 from app.repositories.group_repository import GroupRepository
 from app.repositories.user_repository import UserRepository
-from app.schemas.user import RoleChangeRequest, RoleOut, UserCreate, UserOut, UserUpdate
+from app.schemas.user import (
+    AdminResetPasswordRequest,
+    RoleChangeRequest,
+    RoleOut,
+    UserCreate,
+    UserOut,
+    UserUpdate,
+)
 from app.services.audit_service import AuditService
 from app.utils.validators import normalize_phone_number
 
@@ -164,6 +171,35 @@ async def change_user_role(
         details={"role": role.name, "group_id": str(user.group_id)},
     )
     return ok("User role updated successfully", UserOut.model_validate(user))
+
+
+@router.patch("/{user_id}/reset-password", dependencies=[MANAGE])
+async def admin_reset_password(
+    user_id: UUID,
+    body: AdminResetPasswordRequest,
+    db: DBSession,
+    current_user: CurrentUser,
+):
+    """Super Admin resets any user's password.
+
+    Requires ``USER_MANAGE`` permission (SUPER_ADMIN only).
+    """
+    repo = UserRepository(db)
+    user = await repo.get_by_id(user_id)
+    if user is None:
+        raise NotFoundException("User", str(user_id))
+
+    user.password_hash = hash_password(body.new_password)
+    await db.flush()
+
+    await AuditService(db).log(
+        AuditAction.PASSWORD_CHANGE,
+        user_id=current_user.id,
+        entity_type="user",
+        entity_id=user.id,
+        details={"reset_by": str(current_user.id)},
+    )
+    return ok("Password updated successfully", UserOut.model_validate(user))
 
 
 @router.delete("/{user_id}", dependencies=[MANAGE])

@@ -66,3 +66,11 @@ class RoleChangeRequest(BaseModel):
 
 class LocalUserOut(UserOut):
     pass
+
+
+class AdminResetPasswordRequest(BaseModel):
+    """Request body for Super Admin to reset any user's password."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    new_password: str = Field(min_length=6, max_length=128)
