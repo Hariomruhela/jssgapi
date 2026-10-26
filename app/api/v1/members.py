@@ -15,18 +15,23 @@ from app.core.exceptions import (
 from app.core.permissions import Permission
 from app.core.responses import created, ok, paginated
 from app.core.scope import (
-    assert_group_access,
+    assert_member_access,
     get_access_scope,
-    resolve_managed_group,
+    get_admin_scope,
+    member_in_group,
 )
 from app.dependencies import CurrentUser, DBSession, require_permission
 from app.models.group import SocialGroup
 from app.models.member import Member
+from app.models.member_group import MemberGroupMembership
+from app.models.user import User
+from app.services.group_id_service import assign_member_id
 from app.repositories.member_repository import (
     MEMBER_PROFILE_LOADS,
     MemberRepository,
     designation_filter,
     group_name_filter,
+    member_group_filter,
     trustee_role_filter,
 )
 from app.schemas.member import (
@@ -36,8 +41,8 @@ from app.schemas.member import (
     MemberOut,
     MemberUpdate,
 )
+from app.services import member_group_service as memberships
 from app.services.audit_service import AuditService
-from app.services.group_id_service import assign_member_id
 from app.services.member_photo_service import SLOTS, MemberPhotoService
 from app.services.profile_service import ProfileService
 from app.utils.file_upload import MAX_IMAGE_SIZE
@@ -63,14 +68,22 @@ def _member_out(member: Member) -> MemberOut:
     if group is not None and group.is_deleted:
         group = None
     out.group_name = group.name if group else None
+    out.member_id = member.id
+    out.status = member.membership_status
     return out
 
 
 def _member_list_item(member: Member, profiles: ProfileService) -> MemberListItemOut:
-    return MemberListItemOut(
-        **_member_out(member).model_dump(),
-        **profiles.build_profile(member).model_dump(),
-    )
+    out_dict = _member_out(member).model_dump()
+    prof_dict = profiles.build_profile(member).model_dump()
+    merged = {**out_dict, **prof_dict}
+    merged["member_id"] = member.id
+    merged["status"] = member.membership_status
+    if not merged.get("phone_number"):
+        merged["phone_number"] = member.contact_phone
+    if not merged.get("email"):
+        merged["email"] = member.contact_email
+    return MemberListItemOut(**merged)
 
 
 def _split_full_name(full_name: str) -> tuple[str, str]:
@@ -127,8 +140,9 @@ async def list_members(
     query: str | None = Query(default=None, max_length=200),
     trustee_only: bool = Query(
         default=False,
-        description="Only the members whose linked account is a GROUP_ADMIN or "
-        "SUPER_ADMIN, i.e. the trustees of their group.",
+        description="Only the post holders of their group: members whose linked "
+        "account is a GROUP_ADMIN/SUPER_ADMIN or whose group designation is a "
+        "recognised office (President, Secretary, Treasurer, ...).",
     ),
     designation: str | None = Query(
         default=None,
@@ -196,8 +210,8 @@ async def list_members(
     )
     if group_name:
         stmt = stmt.where(group_name_filter(group_name))
-    # The trustee listing is the member listing narrowed to the members whose
-    # account carries a trustee role, so the two never drift apart.
+    # The post-holder listing is the member listing narrowed to administrator
+    # roles and recognised post-holder designations, so the two never drift apart.
     if trustee_only:
         stmt = stmt.where(trustee_role_filter())
     if (designation or "").strip():
@@ -234,18 +248,21 @@ async def create_member(body: MemberCreate, current_user: CurrentUser, db: DBSes
     first_name, last_name = _split_full_name(body.full_name)
     data["first_name"] = data.get("first_name") or first_name
     data["last_name"] = data.get("last_name") or last_name
-    data["group_id"] = await resolve_managed_group(db, current_user, body.group_id)
-    if data["group_id"] is not None:
-        # The member ID is minted from the group's counter below; a client-sent
-        # value is never trusted once the member belongs to a group.
-        data.pop("membership_number", None)
+    data.pop("group_id", None)
+    data.pop("membership_number", None)
+    group_ids = body.requested_group_ids()
+    scope = await get_admin_scope(db, current_user)
+    if scope is not None:
+        if not group_ids:
+            group_ids = [scope]
+        elif any(group_id != scope for group_id in group_ids):
+            raise ForbiddenException("Operation is limited to your own group")
     member = await repo.create(**data)
-    if data["group_id"] is not None:
-        group = await db.get(SocialGroup, data["group_id"])
-        if group is not None:
-            # Server-mints the member ID (``MP09001`` -> ``MP09001001``) for
-            # the group.
-            await assign_member_id(db, member, group)
+    for group_id in group_ids:
+        group = await db.get(SocialGroup, group_id)
+        if group is None or group.is_deleted:
+            raise BadRequestException("Social group not found")
+        await memberships.add_membership(db, member, group)
     profiles = ProfileService(db)
     await profiles.apply_values(member, body.profile_values())
     await AuditService(db).log(
@@ -270,7 +287,7 @@ async def list_social_group_names(db: DBSession, current_user: CurrentUser):
     scope = await get_access_scope(db, current_user)
     conditions = [Member.is_deleted.is_(False)]
     if not scope.unrestricted and scope.group_id is not None:
-        conditions.append(Member.group_id == scope.group_id)
+        conditions.append(member_group_filter(scope.group_id))
     if (
         not scope.unrestricted
         and scope.group_id is None
@@ -292,7 +309,11 @@ async def list_social_group_names(db: DBSession, current_user: CurrentUser):
     linked_names = (
         await db.execute(
             select(func.distinct(SocialGroup.name))
-            .join(Member, Member.group_id == SocialGroup.id)
+            .join(
+                MemberGroupMembership,
+                MemberGroupMembership.group_id == SocialGroup.id,
+            )
+            .join(Member, Member.id == MemberGroupMembership.member_id)
             .where(*conditions, SocialGroup.is_deleted.is_(False))
         )
     ).scalars()
@@ -324,7 +345,9 @@ async def get_member(member_id: UUID, db: DBSession, current_user: CurrentUser):
         # a forbidden one: a 403 would confirm the id exists.
         if scope.member_id is not None and member.id == scope.member_id:
             pass
-        elif scope.group_id is None or member.group_id != scope.group_id:
+        elif scope.group_id is None or not await member_in_group(
+            db, member, scope.group_id
+        ):
             raise NotFoundException("Member", str(member_id))
     # The profile fields are part of the member record the panel renders, so a
     # single fetch answers with the same shape as a list item.
@@ -342,19 +365,24 @@ async def update_member(
     member = await repo.get_by_id(member_id)
     if member is None:
         raise NotFoundException("Member", str(member_id))
-    await assert_group_access(db, current_user, member.group_id)
-    if body.group_id is not None:
-        await assert_group_access(db, current_user, body.group_id)
-    old_group_id = member.group_id
+    await assert_member_access(db, current_user, member)
     columns = body.member_columns()
-    member = await repo.update(member, **columns)
-    needs_member_id = member.group_id is not None and (
-        member.group_id != old_group_id or not member.membership_number
+    columns.pop("group_id", None)
+    group_selection_sent = bool(
+        {"group_id", "group_ids"} & body.model_fields_set
     )
-    if needs_member_id:
-        target_group = await db.get(SocialGroup, member.group_id)
-        if target_group is not None:
-            await assign_member_id(db, member, target_group)
+    requested_group_ids = body.requested_group_ids()
+    scope = await get_admin_scope(db, current_user)
+    if group_selection_sent and not requested_group_ids:
+        raise BadRequestException("A member must belong to at least one group")
+    member = await repo.update(member, **columns)
+    if group_selection_sent:
+        await memberships.sync_memberships(
+            db,
+            member,
+            requested_group_ids,
+            managed_group_id=scope,
+        )
     # Profile fields live in ``members.profile_data``; a Group Admin has no access to
     # ``PUT /profile`` (that writes the caller's own profile), so the admin edit path
     # must write them too or the panel could never maintain a full member profile.
@@ -424,7 +452,7 @@ async def upload_member_photo(
     member = await _get_member(db, member_id)
     if member is None:
         raise NotFoundException("Member", str(member_id))
-    await assert_group_access(db, current_user, member.group_id)
+    await assert_member_access(db, current_user, member)
 
     ip_address = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
@@ -482,7 +510,7 @@ async def delete_member_photo(
     member = await _get_member(db, member_id)
     if member is None:
         raise NotFoundException("Member", str(member_id))
-    await assert_group_access(db, current_user, member.group_id)
+    await assert_member_access(db, current_user, member)
 
     ip_address = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
@@ -511,22 +539,32 @@ async def approve_member(
     member = await repo.get_by_id(member_id)
     if member is None:
         raise NotFoundException("Member", str(member_id))
-    await assert_group_access(db, current_user, member.group_id)
+    await assert_member_access(db, current_user, member)
     if body.status in (
         MemberStatus.APPROVED,
         MemberStatus.REJECTED,
         MemberStatus.BLOCKED,
     ):
-        if body.status != MemberStatus.APPROVED and not body.rejection_reason:
-            raise BadRequestException("A rejection reason is required")
         member.membership_status = body.status.value
         if body.status == MemberStatus.APPROVED:
             member.approved_at = datetime.now(UTC)
-            member.joined_at = datetime.now(UTC)
+            member.joined_at = member.joined_at or datetime.now(UTC)
             member.approved_by = current_user.id
             member.rejection_reason = None
+            if member.user_id is not None:
+                linked_user = await db.get(User, member.user_id)
+                if linked_user is not None:
+                    linked_user.is_active = True
+            if not member.membership_number and member.group_id:
+                group = await db.get(SocialGroup, member.group_id)
+                if group and group.group_id:
+                    await assign_member_id(db, member, group)
         else:
             member.rejection_reason = body.rejection_reason
+            if member.user_id is not None:
+                linked_user = await db.get(User, member.user_id)
+                if linked_user is not None:
+                    linked_user.is_active = False
         action = (
             AuditAction.MEMBER_APPROVE
             if body.status == MemberStatus.APPROVED
@@ -550,7 +588,7 @@ async def delete_member(member_id: UUID, current_user: CurrentUser, db: DBSessio
     member = await repo.get_by_id(member_id)
     if member is None:
         raise NotFoundException("Member", str(member_id))
-    await assert_group_access(db, current_user, member.group_id)
+    await assert_member_access(db, current_user, member)
     # Soft delete first: if object storage cannot be reached, the member is
     # still gone from the API and only an orphan object is left behind.
     await repo.delete(member)

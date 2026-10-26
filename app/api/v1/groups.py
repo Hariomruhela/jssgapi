@@ -22,14 +22,18 @@ from app.core.scope import (
     assert_group_access,
     get_access_scope,
     get_admin_scope,
+    member_in_group,
 )
 from app.core.security import hash_password
-from app.dependencies import CurrentUser, DBSession, require_permission
+from app.dependencies import CurrentUser, DBSession, OptionalUser, require_permission
 from app.models.group import SocialGroup
 from app.models.member import Member
 from app.models.user import Role, User
 from app.repositories.group_repository import GroupRepository
-from app.repositories.member_repository import MemberRepository
+from app.repositories.member_repository import (
+    MemberRepository,
+    member_group_filter,
+)
 from app.repositories.user_repository import UserRepository
 from app.schemas.group import (
     GroupAdminAssignment,
@@ -40,12 +44,11 @@ from app.schemas.group import (
     SocialGroupOut,
     SocialGroupUpdate,
 )
+from app.services import member_group_service as memberships
 from app.services.audit_service import AuditService
 from app.services.group_id_service import (
     _is_membership_number_violation,
-    assign_member_id,
     next_group_id,
-    next_member_id,
     resolve_city,
 )
 from app.services.sheet_groups_service import read_sheet_groups
@@ -99,7 +102,7 @@ async def _get_user_by_phone_forms(
 async def _assign_default_group_admin(
     db, group: SocialGroup, admin_name: str, admin_phone_number: str
 ) -> User:
-    """Create or promote the admin account and create/link its member record in the group.
+    """Create or promote the admin account and link its member record.
 
     When an account with this phone number already exists, it is promoted to
     GROUP_ADMIN and linked to the group. Otherwise, a new account is created.
@@ -148,16 +151,11 @@ async def _assign_default_group_admin(
 
     if member is None:
         first_name, last_name = split_full_name(user.full_name)
-        membership_number = (
-            await next_member_id(db, group.group_id) if group.group_id else None
-        )
         member = await member_repo.create(
             user_id=user.id,
-            group_id=group.id,
             first_name=first_name,
             last_name=last_name or "",
             contact_phone=user.phone_number or normalized,
-            membership_number=membership_number,
             membership_status=MemberStatus.APPROVED.value,
             is_profile_complete=False,
             profile_data={
@@ -170,10 +168,9 @@ async def _assign_default_group_admin(
         )
     else:
         member.user_id = user.id
-        member.group_id = group.id
         member.membership_status = MemberStatus.APPROVED.value
 
-    await assign_member_id(db, member, group)
+    await memberships.add_membership(db, member, group)
     await AuditService(db).log(
         AuditAction.MEMBER_CREATE if is_new_user else AuditAction.GROUP_UPDATE,
         entity_type="member",
@@ -187,10 +184,10 @@ async def _assign_default_group_admin(
     return user
 
 
-@router.get("", dependencies=[READ])
+@router.get("")
 async def list_groups(
     db: DBSession,
-    current_user: CurrentUser,
+    current_user: OptionalUser,
     query: str | None = Query(default=None, max_length=200),
     status: str | None = Query(default=None),
     source: str = Query(
@@ -212,9 +209,9 @@ async def list_groups(
 
     The sheet source answers with ``{"id", "name", "field"}`` items, is
     de-duplicated and sorted by name, and ignores ``status``/paging - it is a
-    picker's option list, not a paged resource. Both sources need
-    ``group:read``; a GROUP_ADMIN still sees only its own group in the database
-    source.
+    picker's option list, not a paged resource. This endpoint is public; when
+    an authenticated GROUP_ADMIN calls it, the database source still shows only
+    its own group.
     """
     if source == "sheets":
         # Reading the sheet is a network call on Google's side, so it runs in a
@@ -228,10 +225,12 @@ async def list_groups(
         return ok("Groups fetched successfully", sheet_items)
 
     repo = GroupRepository(db)
-    scope = await get_access_scope(db, current_user)
-    # A GROUP_ADMIN sees only their own group. Without this, the panel's group
-    # picker would list every group and the search box would return all of them.
-    visible_group = None if scope.unrestricted else scope.group_id
+    # Anonymous callers see every group. An authenticated GROUP_ADMIN sees only
+    # their own group; without this, the search box would leak the rest.
+    visible_group = None
+    if current_user is not None:
+        scope = await get_access_scope(db, current_user)
+        visible_group = None if scope.unrestricted else scope.group_id
     if query:
         groups = await repo.search(
             query,
@@ -370,6 +369,7 @@ async def list_group_members(
     group_id: UUID,
     db: DBSession,
     current_user: CurrentUser,
+    status: str | None = Query(default=None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
@@ -383,8 +383,11 @@ async def list_group_members(
         raise NotFoundException("Group", str(group_id))
 
     stmt = select(Member).where(
-        Member.group_id == group_id, Member.is_deleted.is_(False)
+        member_group_filter(group_id), Member.is_deleted.is_(False)
     )
+    if status is not None:
+        stmt = stmt.where(Member.membership_status == status)
+
     total = (
         await db.execute(select(func.count()).select_from(stmt.subquery()))
     ).scalar_one()
@@ -417,14 +420,25 @@ def _group_member_out(member: Member) -> GroupMemberOut:
         )
     return GroupMemberOut(
         id=member.id,
+        member_id=member.id,
+        user_id=member.user_id,
         full_name=full_name,
         first_name=member.first_name,
         last_name=member.last_name,
+        phone_number=member.contact_phone,
+        email=member.contact_email,
         membership_number=member.membership_number,
         membership_status=member.membership_status,
+        status=member.membership_status,
+        group_id=member.group_id,
+        group_ids=[
+            row.group_id
+            for row in sorted(member.group_memberships, key=lambda item: item.priority)
+        ],
         contact_email=member.contact_email,
         contact_phone=member.contact_phone,
         profile_photo_url=member.profile_photo_url,
+        created_at=member.created_at,
     )
 
 
@@ -462,7 +476,6 @@ async def assign_group_admin(group_id: UUID, body: GroupAdminAssignment, db: DBS
         first_name, last_name = split_full_name(user.full_name)
         member = await member_repo.create(
             user_id=user.id,
-            group_id=group_id,
             first_name=first_name,
             last_name=last_name or "",
             contact_phone=user.phone_number,
@@ -479,9 +492,8 @@ async def assign_group_admin(group_id: UUID, body: GroupAdminAssignment, db: DBS
         )
     else:
         member.user_id = user.id
-        member.group_id = group_id
         member.membership_status = MemberStatus.APPROVED.value
-    await assign_member_id(db, member, group)
+    await memberships.add_membership(db, member, group)
 
     await AuditService(db).log(
         AuditAction.ROLE_CHANGE,
@@ -568,23 +580,17 @@ async def add_group_member(
                 contact_email=user.email,
             )
 
-    if member.group_id == group_id:
-        # Still mint a member ID if the row predates member IDs (sheet/directory
-        # imports) or was created without a group - first touch backfills it.
-        await assign_member_id(db, member, group)
-        return ok("Member is already in this group", _group_member_out(member))
-    # A scoped caller may only take a member that belongs to another group. An
-    # unassigned member (group_id IS NULL) is fair game, but moving someone out of
-    # a group this caller does not run would be a cross-group write.
     scope = await get_admin_scope(db, current_user)
-    if scope is not None and member.group_id is not None and member.group_id != scope:
+    if (
+        scope is not None
+        and not await member_in_group(db, member, scope)
+        and member.group_id is not None
+    ):
         raise ForbiddenException("Operation is limited to your own group")
-    member.group_id = group_id
-    # Entering a new group always issues a member ID from that group's counter
-    # (``MH15002`` -> ``MH15002001``); the number from the previous group is
-    # history and is never reused or carried over.
-    await assign_member_id(db, member, group)
-    await db.flush()
+
+    _, was_added = await memberships.add_membership(db, member, group)
+    if not was_added:
+        return ok("Member is already in this group", _group_member_out(member))
     await db.refresh(member)
     await AuditService(db).log(
         AuditAction.GROUP_UPDATE,
@@ -609,11 +615,12 @@ async def remove_group_member(
         raise NotFoundException("Group", str(group_id))
     await assert_group_access(db, current_user, group_id)
     member = await MemberRepository(db).get_by_id(member_id)
-    if member is None or member.group_id != group_id:
+    if member is None or not await member_in_group(db, member, group_id):
         raise NotFoundException("Member", str(member_id))
 
-    member.group_id = None
-    await db.flush()
+    removed, _ = await memberships.remove_membership(db, member, group_id)
+    if not removed:
+        raise NotFoundException("Member", str(member_id))
     await AuditService(db).log(
         AuditAction.GROUP_UPDATE,
         entity_type="member",

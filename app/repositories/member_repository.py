@@ -10,6 +10,7 @@ from app.models.family import FamilyMember
 from app.models.group import SocialGroup
 from app.models.location import Location
 from app.models.member import Member
+from app.models.member_group import MemberGroupMembership
 from app.models.professional import ProfessionalInformation
 from app.models.user import Role, User
 from app.repositories.base_repository import BaseRepository
@@ -20,6 +21,9 @@ from app.utils.helpers import is_valid_uuid
 # profile fields (social_group_name, city, area) must eager load them.
 MEMBER_PROFILE_LOADS = (
     selectinload(Member.group),
+    selectinload(Member.group_memberships).selectinload(
+        MemberGroupMembership.group
+    ),
     selectinload(Member.location),
 )
 
@@ -44,19 +48,76 @@ TRUSTEE_ROLE_LABELS = frozenset(
     label for labels in _TRUSTEE_ROLE_LABELS_BY_ROLE.values() for label in labels
 )
 
+#: Exact group designations that make a member a post holder even without a
+#: ``GROUP_ADMIN``/``SUPER_ADMIN`` login role. Comparisons are case-insensitive
+#: and trim surrounding whitespace, so an imported ``CHAIRMAN`` matches too.
+#: Common punctuation aliases are listed so ``Vice-President`` and
+#: ``Chairman and Managing Director`` are treated as the same office.
+POST_HOLDER_DESIGNATIONS = frozenset(
+    {
+        "president",
+        "vice president",
+        "vice-president",
+        "chairman",
+        "chairman & managing director",
+        "chairman and managing director",
+        "protector",
+        "secretary",
+        "treasurer",
+        "publicity secretary",
+        "secretary treasurer",
+        "secretary/treasurer",
+    }
+)
+
+
+def _normalized_designation(column):
+    """A designation column folded to trimmed, single-spaced lowercase text."""
+    return func.lower(
+        func.regexp_replace(func.btrim(column, _TRIM_CHARS), r"\s+", " ", "g")
+    )
+
+
+def post_holder_designation_filter():
+    """Members whose group designation is one of the post-holder offices.
+
+    The designation lives in ``members.profile_data`` and is mirrored into
+    ``professional_information.designation``; either store may hold it. Exact
+    matching keeps unrelated job titles such as ``Company Secretary`` or
+    ``Past President`` out of the post-holder listing.
+    """
+    stored = _normalized_designation(
+        Member.profile_data["group_designation"].astext
+    )
+    mirrored = (
+        select(ProfessionalInformation.member_id)
+        .where(
+            ProfessionalInformation.member_id == Member.id,
+            _normalized_designation(ProfessionalInformation.designation).in_(
+                POST_HOLDER_DESIGNATIONS
+            ),
+        )
+        .exists()
+    )
+    return or_(stored.in_(POST_HOLDER_DESIGNATIONS), mirrored)
+
 
 def trustee_role_filter(role: RoleName | None = None):
-    """Members whose linked login account is a group or platform administrator.
+    """Members who are post holders of their group.
 
-    A trustee is a community member whose account carries ``GROUP_ADMIN`` or
-    ``SUPER_ADMIN``; the member is not a second record. The member's own
-    ``group_id`` decides which group's trustees they are, so a SUPER_ADMIN is a
-    trustee of the group they were added to rather than of every group.
+    With no explicit role, a member qualifies when their account carries
+    ``GROUP_ADMIN`` or ``SUPER_ADMIN`` **or** their group designation is one of
+    :data:`POST_HOLDER_DESIGNATIONS`. Passing a role narrows the result to that
+    administrator role only, so a designation-only post holder is not returned.
+
+    The member is not a second record. The member's own ``group_id`` decides
+    which group's post holders they are, so a SUPER_ADMIN is a post holder of
+    the group they were added to rather than of every group.
     """
     labels = (
         _TRUSTEE_ROLE_LABELS_BY_ROLE[role] if role is not None else TRUSTEE_ROLE_LABELS
     )
-    return (
+    role_condition = (
         select(User.id)
         .join(Role, Role.id == User.role_id)
         .where(
@@ -66,6 +127,22 @@ def trustee_role_filter(role: RoleName | None = None):
         )
         .exists()
     )
+    if role is not None:
+        return role_condition
+    return or_(role_condition, post_holder_designation_filter())
+
+
+def member_group_filter(group_id):
+    """Members linked to a group through any membership, not just the primary.
+
+    The stale ``members.group_id`` pointer is also accepted so a row that
+    predates the backfill is never hidden while the migration catches up.
+    """
+    linked = select(MemberGroupMembership.id).where(
+        MemberGroupMembership.member_id == Member.id,
+        MemberGroupMembership.group_id == group_id,
+    ).exists()
+    return or_(Member.group_id == group_id, linked)
 
 
 def group_name_filter(group_name: str):
@@ -85,6 +162,16 @@ def group_name_filter(group_name: str):
         func.trim(Member.profile_data["social_group_name"].astext)
     )
     linked_group = (
+        select(MemberGroupMembership.id)
+        .join(SocialGroup, SocialGroup.id == MemberGroupMembership.group_id)
+        .where(
+            MemberGroupMembership.member_id == Member.id,
+            SocialGroup.is_deleted.is_(False),
+            func.lower(func.trim(SocialGroup.name)) == needle,
+        )
+        .exists()
+    )
+    legacy_linked = (
         select(SocialGroup.id)
         .where(
             SocialGroup.id == Member.group_id,
@@ -93,7 +180,7 @@ def group_name_filter(group_name: str):
         )
         .exists()
     )
-    return or_(profile_name == needle, and_(Member.group_id.is_not(None), linked_group))
+    return or_(profile_name == needle, linked_group, legacy_linked)
 
 
 #: The characters trimmed off a stored designation. ``btrim`` only strips
@@ -108,8 +195,9 @@ def designation_filter(designation: str | None = None):
     The designation is kept in ``members.profile_data`` and mirrored into
     ``professional_information.designation``; either store may hold it, so both
     are read. A blank value (``null``, ``""`` or whitespace only) means the
-    member has no designation. Being a trustee is decided by the linked
-    account's role (see :func:`trustee_role_filter`), not by this field.
+    member has no designation. Being a post holder is decided by the linked
+    account's role or by an exact post-holder designation (see
+    :func:`trustee_role_filter`); this filter only narrows by a designation.
     """
     stored = func.btrim(Member.profile_data["group_designation"].astext, _TRIM_CHARS)
     mirrored = (
@@ -313,6 +401,16 @@ def _build_member_search_expressions(query: str):
 class MemberRepository(BaseRepository[Member]):
     model = Member
 
+    def apply_filters(self, stmt, filters: dict[str, object]):
+        for key, value in filters.items():
+            if value is None:
+                continue
+            if key == "group_id":
+                stmt = stmt.where(member_group_filter(value))
+            else:
+                stmt = stmt.where(getattr(Member, key) == value)
+        return stmt
+
     async def get_by_id(self, instance_id) -> Member | None:
         """Fetch a member that is not soft-deleted.
 
@@ -356,7 +454,7 @@ class MemberRepository(BaseRepository[Member]):
     ) -> list[Member]:
         result = await self.session.execute(
             select(Member)
-            .where(Member.group_id == group_id, Member.is_deleted.is_(False))
+            .where(member_group_filter(group_id), Member.is_deleted.is_(False))
             .order_by(Member.first_name)
             .limit(limit)
             .offset(offset)
@@ -385,7 +483,7 @@ class MemberRepository(BaseRepository[Member]):
         if where_cond is not None:
             stmt = stmt.where(where_cond)
         if group_id is not None:
-            stmt = stmt.where(Member.group_id == group_id)
+            stmt = stmt.where(member_group_filter(group_id))
         if membership_status is not None:
             stmt = stmt.where(Member.membership_status == membership_status)
         if group_name:
@@ -435,7 +533,7 @@ class MemberRepository(BaseRepository[Member]):
         if where_cond is not None:
             stmt = stmt.where(where_cond)
         if group_id is not None:
-            stmt = stmt.where(Member.group_id == group_id)
+            stmt = stmt.where(member_group_filter(group_id))
         if member_id is not None:
             stmt = stmt.where(Member.id == member_id)
         if membership_status is not None:

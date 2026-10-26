@@ -12,6 +12,7 @@ from app.models.base import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKe
 if TYPE_CHECKING:
     from app.models.location import Location
     from app.models.member import Member
+    from app.models.member_group import MemberGroupMembership
     from app.models.trustee import Trustee
     from app.models.user import User
 
@@ -47,6 +48,9 @@ class SocialGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
 
     location: Mapped[Location | None] = relationship(back_populates="groups")
     members: Mapped[list[Member]] = relationship(back_populates="group")
+    member_memberships: Mapped[list[MemberGroupMembership]] = relationship(
+        back_populates="group", cascade="all, delete-orphan"
+    )
     trustees: Mapped[list[Trustee]] = relationship(back_populates="group")
     # Login accounts assigned to administer this group. Only GROUP_ADMIN users
     # belong here; `User.group_id` points back at this row.

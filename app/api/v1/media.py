@@ -25,6 +25,7 @@ from app.models.event import Event
 from app.models.jain_tirth import JainTirth
 from app.models.media import Media
 from app.models.member import Member
+from app.models.member_group import MemberGroupMembership
 from app.models.user import User
 from app.repositories.media_repository import MediaRepository
 from app.schemas.media import MediaOut
@@ -109,9 +110,22 @@ async def assert_owner_in_scope(
     scoped admin would otherwise be browsing an unenforced dimension.
     """
     if owner_type == "member":
+        owner_groups = set(
+            (
+                await db.execute(
+                    select(MemberGroupMembership.group_id).where(
+                        MemberGroupMembership.member_id == owner_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
         owner_group_id = await db.scalar(
             select(Member.group_id).where(Member.id == owner_id)
         )
+        if owner_group_id is not None:
+            owner_groups.add(owner_group_id)
     elif owner_type == "group":
         owner_group_id = owner_id if owner_id is not None else None
     elif owner_type == "event":
@@ -125,7 +139,12 @@ async def assert_owner_in_scope(
     else:
         raise ForbiddenException("This media owner type is not accessible")
 
-    if scope.group_id is None or owner_group_id != scope.group_id:
+    if scope.group_id is None:
+        raise ForbiddenException("Operation is limited to your own group")
+    if owner_type == "member":
+        if scope.group_id not in owner_groups:
+            raise ForbiddenException("Operation is limited to your own group")
+    elif owner_group_id != scope.group_id:
         raise ForbiddenException("Operation is limited to your own group")
 
 
@@ -151,7 +170,7 @@ async def upload_media(
     effective_group = group_id
     if not scope.unrestricted:
         await assert_owner_in_scope(db, scope, owner_type, owner_id)
-        effective_group = await scope_group_from_owner(db, owner_type, owner_id)
+        effective_group = scope.group_id
     media = await service.upload(
         owner_type=owner_type,
         owner_id=owner_id,

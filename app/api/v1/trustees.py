@@ -27,6 +27,7 @@ from app.repositories.member_repository import (
     TRUSTEE_ROLES,
     MemberRepository,
     designation_filter,
+    member_group_filter,
     trustee_role_filter,
 )
 from app.repositories.trustee_repository import TrusteeRepository
@@ -58,13 +59,15 @@ async def _trustee_listing(
     page: int = 1,
     page_size: int = 20,
 ):
-    """The trustees of the directory, derived from the members themselves.
+    """The trustees/post holders of the directory, derived from the members.
 
-    A trustee is a community member whose linked login account carries
-    ``GROUP_ADMIN`` or ``SUPER_ADMIN``. The member's own group decides which
-    group's trustee they are, so a SUPER_ADMIN is a trustee of the group they
-    were added to, not of every group. Nothing is duplicated: the item is the
-    member, and a member that loses the role simply drops out of the listing.
+    A member qualifies when their linked login account carries ``GROUP_ADMIN``
+    or ``SUPER_ADMIN``, or when their group designation is one of the recognised
+    post-holder offices (President, Secretary, Treasurer, ...). The member's own
+    group decides which group's post holder they are, so a SUPER_ADMIN is a post
+    holder of the group they were added to, not of every group. Nothing is
+    duplicated: the item is the member, and a member that loses the role or the
+    designation simply drops out of the listing.
     """
     scope = await get_access_scope(db, current_user)
     if group_id is not None and not scope.unrestricted and group_id != scope.group_id:
@@ -87,7 +90,7 @@ async def _trustee_listing(
     # a GROUP_ADMIN sees only the trustees of its own group.
     effective_group = group_id if scope.unrestricted else scope.group_id
     if effective_group is not None:
-        stmt = stmt.where(Member.group_id == effective_group)
+        stmt = stmt.where(member_group_filter(effective_group))
     if scope.member_id is not None and scope.group_id is None:
         stmt = stmt.where(Member.id == scope.member_id)
     if is_current is not None:
@@ -157,12 +160,13 @@ async def list_trustees(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
-    """The trustees of the directory.
+    """The trustees/post holders of the directory.
 
-    A trustee is a community member whose linked login account carries
-    ``GROUP_ADMIN`` or ``SUPER_ADMIN``. The member's own group decides which
-    group's trustee they are, so a SUPER_ADMIN is a trustee of the group they
-    were added to, not of every group.
+    A member qualifies when their linked login account carries ``GROUP_ADMIN``
+    or ``SUPER_ADMIN``, or when their group designation is one of the recognised
+    post-holder offices (President, Secretary, Treasurer, ...). The member's own
+    group decides which group's post holder they are, so a SUPER_ADMIN is a post
+    holder of the group they were added to, not of every group.
 
     The board seats kept in the ``trustees`` table are still served by
     ``GET /trustees/board``.
@@ -268,7 +272,11 @@ async def list_board_seats(
 
 
 def _member_trustee_role(member: Member) -> str | None:
-    """The trustee tag of a member: ``GROUP_ADMIN`` or ``SUPER_ADMIN``."""
+    """The administrator tag of a member: ``GROUP_ADMIN`` or ``SUPER_ADMIN``.
+
+    A post holder designated only by office (for example ``President``) has no
+    administrator role; its tag is ``None`` and the designation is shown instead.
+    """
     user = member.user
     if user is None or user.role is None:
         return None

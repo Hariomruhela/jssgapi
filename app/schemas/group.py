@@ -171,14 +171,22 @@ class GroupMemberOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    member_id: UUID | None = None
+    user_id: UUID | None = None
     full_name: str | None = None
     first_name: str
     last_name: str
+    phone_number: str | None = None
+    email: str | None = None
     membership_number: str | None = None
     membership_status: str
+    status: str | None = None
+    group_id: UUID | None = None
+    group_ids: list[UUID] = []
     contact_email: str | None = None
     contact_phone: str | None = None
     profile_photo_url: str | None = None
+    created_at: datetime | None = None
 
 
 class GroupMemberAssignment(BaseModel):

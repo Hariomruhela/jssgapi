@@ -62,6 +62,7 @@ class MemberCreate(ProfileUpdate):
 
     user_id: UUID | None = None
     group_id: UUID | None = None
+    group_ids: list[UUID] | None = None
     location_id: UUID | None = None
     first_name: str | None = None
     middle_name: str | None = None
@@ -90,8 +91,20 @@ class MemberCreate(ProfileUpdate):
         column it did not mention.
         """
         return self.model_dump(
-            exclude=set(ProfileUpdate.model_fields), exclude_none=True
+            exclude=set(ProfileUpdate.model_fields) | {"group_ids"},
+            exclude_none=True,
         )
+
+    def requested_group_ids(self) -> list[UUID]:
+        """Ordered selection, preferring ``group_ids`` over legacy ``group_id``."""
+        source = self.group_ids
+        if source is None:
+            source = [self.group_id] if self.group_id is not None else []
+        ordered: list[UUID] = []
+        for group_id in source:
+            if group_id not in ordered:
+                ordered.append(group_id)
+        return ordered
 
     def profile_values(self) -> dict[str, str | None]:
         """Profile fields supplied by the client (dates as ISO strings)."""
@@ -120,6 +133,7 @@ class MemberUpdate(ProfileUpdate):
     model_config = ConfigDict(extra="ignore")
 
     group_id: UUID | None = None
+    group_ids: list[UUID] | None = None
     location_id: UUID | None = None
     first_name: str | None = None
     middle_name: str | None = None
@@ -142,10 +156,21 @@ class MemberUpdate(ProfileUpdate):
         can only ever set values.
         """
         return self.model_dump(
-            exclude=set(ProfileUpdate.model_fields),
+            exclude=set(ProfileUpdate.model_fields) | {"group_ids"},
             exclude_none=True,
             exclude_unset=True,
         )
+
+    def requested_group_ids(self) -> list[UUID]:
+        """Ordered selection, preferring ``group_ids`` over legacy ``group_id``."""
+        source = self.group_ids
+        if source is None:
+            source = [self.group_id] if self.group_id is not None else []
+        ordered: list[UUID] = []
+        for group_id in source:
+            if group_id not in ordered:
+                ordered.append(group_id)
+        return ordered
 
     def profile_values(self) -> dict[str, str | None]:
         """Profile fields supplied by the client (dates as ISO strings)."""
@@ -161,16 +186,30 @@ class MemberApproveRequest(BaseModel):
     rejection_reason: str | None = None
 
 
+class MemberGroupMembershipOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    group_id: UUID
+    group_name: str | None = None
+    group_code: str | None = None
+    priority: int
+    is_primary: bool
+    joined_at: datetime | None = None
+
+
 class MemberOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    member_id: UUID | None = None
     user_id: UUID | None = None
     group_id: UUID | None = None
     # The linked group's name (``group_id`` -> ``social_groups.name``), so a
     # client can render the group without a second request. Distinct from the
     # free-text ``social_group_name`` profile field the sheet import fills in.
     group_name: str | None = None
+    group_memberships: list[MemberGroupMembershipOut] = []
     location_id: UUID | None = None
     first_name: str
     middle_name: str | None = None
@@ -185,6 +224,7 @@ class MemberOut(BaseModel):
     occupation_summary: str | None = None
     membership_number: str | None = None
     membership_status: str
+    status: str | None = None
     joined_at: datetime | None = None
     approved_at: datetime | None = None
     rejection_reason: str | None = None
@@ -200,3 +240,6 @@ class MemberListItemOut(MemberOut, ProfileOut):
     """List item for ``GET /api/v1/members``: the member record plus the
     profile fields stored in ``members.profile_data`` (or derived from the
     member's columns, family, professional and location relations)."""
+
+    member_id: UUID | None = None
+    status: str | None = None

@@ -73,7 +73,6 @@ def _register(client, phone: str) -> str:
             "password": "StrongPass123!",
             "phone_number": phone.removeprefix("+91"),
             "confirm_password": "StrongPass123!",
-            "id_token": phone,
         },
     )
     assert resp.status_code == 200, resp.text

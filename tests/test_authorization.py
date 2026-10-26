@@ -93,7 +93,6 @@ def _register_member(
             "password": PASSWORD,
             "phone_number": phone.removeprefix("+91"),
             "confirm_password": PASSWORD,
-            "id_token": phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -438,7 +437,6 @@ def test_signup_rejects_role_field(client):
         "password": PASSWORD,
         "phone_number": member_phone.removeprefix("+91"),
         "confirm_password": PASSWORD,
-        "id_token": member_phone,
     }
     resp = client.post("/api/v1/auth/register", json=body)
     assert resp.status_code == 200, resp.text
@@ -450,7 +448,6 @@ def test_signup_rejects_role_field(client):
         "full_name": "Role Field",
         "email": f"rolefield_{int(time.time() * 1000)}@test.local",
         "phone_number": role_phone.removeprefix("+91"),
-        "id_token": role_phone,
         "role": "Admin",
     }
     resp = client.post("/api/v1/auth/register", json=role_body)
@@ -472,7 +469,6 @@ def test_login_response_includes_role(client):
             "password": PASSWORD,
             "phone_number": member_phone.removeprefix("+91"),
             "confirm_password": PASSWORD,
-            "id_token": member_phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -508,7 +504,6 @@ def test_logout_still_works(client):
             "password": PASSWORD,
             "phone_number": phone.removeprefix("+91"),
             "confirm_password": PASSWORD,
-            "id_token": phone,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -630,15 +625,14 @@ def test_group_admin_in_another_group_sees_nothing(client, world):
 
 # --- Group isolation of every read endpoint ----------------------------------------
 # The write paths (PATCH/POST/DELETE) were group-scoped, but the reads were not:
-# GET /members, /trustees, /events, /news, /media and /groups accepted no
-# authentication at all, so a GROUP_ADMIN could enumerate the whole platform.
+# GET /members, /trustees, /events, /news and /media accepted no authentication
+# at all, so a GROUP_ADMIN could enumerate the whole platform.
 
 
 def test_member_listing_requires_authentication(client, world):
     """A read that accepts no credentials is a read that leaks every group."""
     for path in (
         "/api/v1/members",
-        "/api/v1/groups",
         "/api/v1/trustees",
         "/api/v1/events",
         "/api/v1/news",
@@ -650,6 +644,13 @@ def test_member_listing_requires_authentication(client, world):
         f"/api/v1/members/{world['member_a_id']}",
     )
     assert resp.status_code == 401, resp.text
+
+
+def test_group_listing_is_public(client, world):
+    resp = client.get("/api/v1/groups?page_size=100")
+    assert resp.status_code == 200, resp.text
+    ids = {item["id"] for item in resp.json()["data"]}
+    assert {str(world["group_a_id"]), str(world["group_b_id"])} <= ids
 
 
 def test_group_admin_member_listing_excludes_other_groups(client, world):

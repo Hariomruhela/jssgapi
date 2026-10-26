@@ -86,7 +86,7 @@ def _asyncpg_dsn(url: str, database: str) -> str:
         parts._replace(
             scheme=parts.scheme.split("+", 1)[0],
             path=f"/{database}",
-            query="",
+            query=parts.query,
             fragment="",
         )
     )
@@ -143,17 +143,7 @@ async def _drop_test_database() -> None:
 @pytest.fixture(scope="session", autouse=True)
 def isolated_test_database():
     """Create, migrate and seed a throwaway database for the whole session."""
-    asyncio.run(_create_test_database())
-
-    from alembic import command
-    from alembic.config import Config
-
-    alembic_config = Config(str(ROOT / "alembic.ini"))
-    alembic_config.set_main_option("script_location", str(ROOT / "migrations"))
-    command.upgrade(alembic_config, "head")
-
-    from app.database import async_session_factory, engine
-    from app.services.bootstrap_service import bootstrap_app
+    from app.database import engine
 
     if not (engine.url.database or "").endswith(REQUIRED_DB_SUFFIX):
         raise RuntimeError(
@@ -161,9 +151,22 @@ def isolated_test_database():
             f"only ever talk to a database ending in {REQUIRED_DB_SUFFIX!r}."
         )
 
-    # Roles and permissions live outside the migrations, so seed them the way the
-    # application does at start up.
-    asyncio.run(bootstrap_app(async_session_factory))
+    if not os.environ.get("KEEP_TEST_DB"):
+        asyncio.run(_create_test_database())
+
+        from alembic import command
+        from alembic.config import Config
+
+        alembic_config = Config(str(ROOT / "alembic.ini"))
+        alembic_config.set_main_option("script_location", str(ROOT / "migrations"))
+        command.upgrade(alembic_config, "head")
+
+        from app.database import async_session_factory
+        from app.services.bootstrap_service import bootstrap_app
+
+        # Roles and permissions live outside the migrations, so seed them the way the
+        # application does at start up.
+        asyncio.run(bootstrap_app(async_session_factory))
 
     try:
         yield

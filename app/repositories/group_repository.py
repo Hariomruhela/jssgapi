@@ -9,6 +9,7 @@ from app.models.group import SocialGroup
 from app.models.location import Location
 from app.models.media import Media
 from app.models.member import Member
+from app.models.member_group import MemberGroupMembership
 from app.models.news import News
 from app.models.trustee import Trustee
 from app.repositories.base_repository import BaseRepository
@@ -99,8 +100,12 @@ class GroupRepository(BaseRepository[SocialGroup]):
 
         member_match = (
             select(Member.id)
+            .join(
+                MemberGroupMembership,
+                MemberGroupMembership.member_id == Member.id,
+            )
             .where(
-                Member.group_id == SocialGroup.id,
+                MemberGroupMembership.group_id == SocialGroup.id,
                 Member.is_deleted.is_(False),
                 or_(
                     Member.first_name.ilike(contains),
@@ -150,8 +155,12 @@ class GroupRepository(BaseRepository[SocialGroup]):
                 t_contains = f"%{t}%"
                 t_member_match = (
                     select(Member.id)
+                    .join(
+                        MemberGroupMembership,
+                        MemberGroupMembership.member_id == Member.id,
+                    )
                     .where(
-                        Member.group_id == SocialGroup.id,
+                        MemberGroupMembership.group_id == SocialGroup.id,
                         Member.is_deleted.is_(False),
                         or_(
                             Member.first_name.ilike(t_contains),
@@ -184,8 +193,12 @@ class GroupRepository(BaseRepository[SocialGroup]):
             where_condition = single_needle_match
 
         member_count = (
-            select(func.count(Member.id))
-            .where(Member.group_id == SocialGroup.id, Member.is_deleted.is_(False))
+            select(func.count(MemberGroupMembership.id))
+            .join(Member, Member.id == MemberGroupMembership.member_id)
+            .where(
+                MemberGroupMembership.group_id == SocialGroup.id,
+                Member.is_deleted.is_(False),
+            )
             .correlate(SocialGroup)
             .scalar_subquery()
         )
@@ -280,9 +293,14 @@ class GroupRepository(BaseRepository[SocialGroup]):
 
         Every ``CASCADE_DEPENDENT_MODELS`` row that points at the group is
         unlinked (``group_id = NULL``) first, so the FK cascade has nothing to
-        destroy. ``members``/``users``/``advertisements``/``events`` are
+        destroy. Members are rehomed through their memberships first, so
+        removing a group promotes the next group instead of silently dropping
+        the membership. ``users``/``advertisements``/``events`` are
         ``ON DELETE SET NULL`` and unlink themselves.
         """
+        from app.services.member_group_service import detach_group
+
+        await detach_group(self.session, group.id)
         for model in CASCADE_DEPENDENT_MODELS:
             await self.session.execute(
                 update(model).where(model.group_id == group.id).values(group_id=None)

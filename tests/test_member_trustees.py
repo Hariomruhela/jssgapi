@@ -1,9 +1,11 @@
-"""The trustee listing is derived from the members' account role.
+"""The post-holder listing is derived from the member's role or designation.
 
-A trustee is a community member whose linked login account carries
-``GROUP_ADMIN`` or ``SUPER_ADMIN``. The member's own group decides which group's
-trustee they are, so a SUPER_ADMIN is a trustee of the group they were added to,
-not of every group. A designation on its own no longer makes a member a trustee.
+A post holder is a community member whose linked login account carries
+``GROUP_ADMIN`` or ``SUPER_ADMIN``, or whose group designation is a recognised
+office (President, Vice President, Chairman, Protector, Secretary, Treasurer,
+Publicity Secretary, ...). The member's own group decides which group's post
+holder they are, so a SUPER_ADMIN is a post holder of the group they were added
+to, not of every group. Unrelated job titles must not qualify.
 """
 
 from __future__ import annotations
@@ -199,8 +201,23 @@ def test_a_super_admin_member_is_a_trustee_of_its_group(
     assert items[member["id"]]["group_id"] == group_id
 
 
-def test_a_member_role_is_not_a_trustee(client: TestClient, auth: dict):
-    """A designation alone must not make a MEMBER a trustee."""
+POST_HOLDER_DESIGNATIONS = (
+    "President",
+    "Vice President",
+    "Chairman",
+    "Chairman & Managing Director",
+    "Protector",
+    "Secretary",
+    "Treasurer",
+    "Publicity Secretary",
+    "Secretary Treasurer",
+)
+
+
+@pytest.mark.parametrize("designation", POST_HOLDER_DESIGNATIONS)
+def test_a_member_with_a_post_holder_designation_is_a_trustee(
+    client: TestClient, auth: dict, designation: str
+):
     group_id = _create_group(client, auth)
     member = _create_role_member(
         client,
@@ -210,18 +227,47 @@ def test_a_member_role_is_not_a_trustee(client: TestClient, auth: dict):
     )
     client.patch(
         f"/api/v1/members/{member['id']}",
-        json={"group_designation": "President"},
+        json={"group_designation": designation},
         headers=auth,
     )
 
+    items = _trustee_items(client, auth)
+    assert member["id"] in items
+    assert items[member["id"]]["designation"] == designation
+    assert items[member["id"]]["role"] is None
+
+
+@pytest.mark.parametrize("designation", ("president", "CHAIRMAN", "treasurer"))
+def test_post_holder_designation_matching_is_case_insensitive(
+    client: TestClient, auth: dict, designation: str
+):
+    member = _create_member(client, auth, group_designation=designation)
+    assert member["id"] in _trustee_ids(client, auth)
+
+
+@pytest.mark.parametrize(
+    "designation",
+    (
+        "Company Secretary",
+        "Past President",
+        "First Secretary",
+        "Executive President",
+        "Board Member",
+        "Volunteer",
+    ),
+)
+def test_unrelated_designations_are_not_post_holders(
+    client: TestClient, auth: dict, designation: str
+):
+    member = _create_member(client, auth, group_designation=designation)
     assert member["id"] not in _trustee_ids(client, auth)
 
 
-def test_a_member_without_an_account_is_not_a_trustee(
+def test_a_member_without_an_account_can_be_a_post_holder(
     client: TestClient, auth: dict
 ):
     member = _create_member(client, auth, group_designation="President")
-    assert member["id"] not in _trustee_ids(client, auth)
+    assert member["id"] in _trustee_ids(client, auth)
 
 
 def test_a_trustee_is_also_a_member(client: TestClient, auth: dict):
@@ -239,10 +285,13 @@ def test_the_role_filter_narrows_the_listing(client: TestClient, auth: dict):
     super_admin = _create_role_member(
         client, auth, "SUPER_ADMIN", group_id=_create_group(client, auth)
     )
+    designated = _create_member(client, auth, group_designation="President")
 
     ids = _trustee_ids(client, auth, role="SUPER_ADMIN")
     assert super_admin["id"] in ids
     assert group_admin["id"] not in ids
+    # An explicit role filter stays role-only.
+    assert designated["id"] not in ids
 
 
 def test_the_role_filter_rejects_an_unknown_role(client: TestClient, auth: dict):
@@ -328,6 +377,7 @@ def test_the_member_listing_can_be_narrowed_to_the_trustees(
 ):
     group_id = _create_group(client, auth)
     trustee = _create_role_member(client, auth, "GROUP_ADMIN", group_id=group_id)
+    designated = _create_member(client, auth, group_designation="Secretary")
     plain = _create_member(client, auth)
     assert plain["id"] not in _trustee_ids(client, auth)
 
@@ -339,6 +389,7 @@ def test_the_member_listing_can_be_narrowed_to_the_trustees(
     assert response.status_code == 200, response.text
     ids = {item["id"] for item in response.json()["data"]}
     assert trustee["id"] in ids
+    assert designated["id"] in ids
     assert plain["id"] not in ids
 
 
@@ -379,9 +430,11 @@ def test_the_trustee_listing_serves_the_members(client: TestClient, auth: dict):
     ids = {item["id"] for item in items}
     assert member["id"] in ids
     for item in items:
-        # Every trustee is a member and carries an administrator tag.
+        # Every post holder is a member and qualifies through an administrator
+        # role or a recognised post-holder designation.
         assert item["member_id"] == item["id"]
-        assert item["role"] in ("GROUP_ADMIN", "SUPER_ADMIN")
+        assert item["role"] in ("GROUP_ADMIN", "SUPER_ADMIN", None)
+        assert item["role"] or item["designation"]
 
 
 def test_the_board_seats_keep_their_own_listing(client: TestClient, auth: dict):
@@ -397,10 +450,10 @@ def test_the_board_seats_keep_their_own_listing(client: TestClient, auth: dict):
     assert isinstance(board, list)
 
 
-def test_a_board_seat_does_not_make_a_member_a_trustee(
+def test_a_board_seat_with_a_post_holder_designation_makes_a_member_a_trustee(
     client: TestClient, auth: dict
 ):
-    """A board seat is its own record; being on it is not a trustee role."""
+    """A seat mirrors its post-holder designation onto the member."""
     group_id = _create_group(client, auth)
     member = _create_member(client, auth, group_id=group_id)
     assert member["id"] not in _trustee_ids(client, auth)
@@ -424,8 +477,12 @@ def test_a_board_seat_does_not_make_a_member_a_trustee(
         "/api/v1/trustees/board", params={"page_size": 100}, headers=auth
     ).json()["data"]
     assert seat["id"] in {item["id"] for item in board}
-    # The seat carries a designation on the member, but no administrator role.
-    assert member["id"] not in _trustee_ids(client, auth)
+    # The seat's designation is mirrored onto the member, so the member now
+    # qualifies as a post holder even without an administrator role.
+    items = _trustee_items(client, auth)
+    assert member["id"] in items
+    assert items[member["id"]]["designation"] == "Treasurer"
+    assert items[member["id"]]["role"] is None
 
 
 def test_a_trustee_directory_item_is_never_a_duplicate_member(

@@ -65,12 +65,13 @@ class TrusteeOut(BaseModel):
 
 
 class MemberTrusteeOut(BaseModel):
-    """A trustee of the directory, derived from a member's account role.
+    """A post holder of the directory, derived from the member.
 
-    A trustee is not a second record: it is the member whose linked login
-    account carries ``GROUP_ADMIN`` or ``SUPER_ADMIN``. The member's own id is
-    therefore the id of this item, and ``member_id`` repeats it so a client can
-    treat the trustee as a member without a second lookup.
+    A post holder is not a second record: it is the member whose linked login
+    account carries ``GROUP_ADMIN``/``SUPER_ADMIN`` or whose group designation is
+    a recognised post-holder office (President, Secretary, Treasurer, ...). The
+    member's own id is therefore the id of this item, and ``member_id`` repeats
+    it so a client can treat the post holder as a member without a second lookup.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -82,7 +83,8 @@ class MemberTrusteeOut(BaseModel):
     first_name: str
     last_name: str
     full_name: str
-    #: The trustee tag: ``GROUP_ADMIN`` or ``SUPER_ADMIN``.
+    #: The administrator tag: ``GROUP_ADMIN`` or ``SUPER_ADMIN``; null when the
+    #: member qualifies only through a post-holder designation.
     role: str | None = None
     designation: str
     contact_email: str | None = None

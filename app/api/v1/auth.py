@@ -101,13 +101,15 @@ async def register(body: RegisterRequest, request: Request, db: DBSession):
         email=body.email,
         password=body.password,
         phone_number=body.phone_number,
-        id_token=body.id_token,
+        group_id=body.group_id,
+        group_name=body.group_name,
         ip_address=ip,
         user_agent=ua,
     )
     return AuthResponse(
         user=UserOut.model_validate(result["user"]),
-        tokens=result["tokens"],
+        tokens=result.get("tokens"),
+        message=result.get("message"),
     )
 
 

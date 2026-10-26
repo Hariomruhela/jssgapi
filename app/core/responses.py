@@ -91,6 +91,7 @@ def error_response(
         "content": {
             "success": False,
             "message": message,
+            "detail": message,
             "error_code": error_code,
         },
     }

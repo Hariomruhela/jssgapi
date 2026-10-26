@@ -125,7 +125,6 @@ def _register(client: TestClient, phone: str) -> str:
             "password": "V3ryStr0ng!Pass",
             "phone_number": phone.removeprefix("+91"),
             "confirm_password": "V3ryStr0ng!Pass",
-            "id_token": phone,
         },
     )
     assert response.status_code == 200, response.text

@@ -26,6 +26,7 @@ from sqlalchemy.orm import selectinload
 from app.core.scope import AccessScope
 from app.models.family import FamilyMember
 from app.models.member import Member
+from app.models.member_group import MemberGroupMembership
 from app.schemas.celebration import (
     AnniversaryOut,
     BirthdayOut,
@@ -223,7 +224,14 @@ def _scope_conditions(scope: AccessScope) -> list:
     if scope.unrestricted:
         return []
     if scope.group_id is not None:
-        return [Member.group_id == scope.group_id]
+        return [
+            select(MemberGroupMembership.id)
+            .where(
+                MemberGroupMembership.member_id == Member.id,
+                MemberGroupMembership.group_id == scope.group_id,
+            )
+            .exists()
+        ]
     if scope.member_id is not None:
         return [Member.id == scope.member_id]
     return []

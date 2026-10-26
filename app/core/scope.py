@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import RoleName, resolve_role_name
 from app.core.exceptions import ForbiddenException
 from app.models.member import Member
+from app.models.member_group import MemberGroupMembership
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -105,6 +106,37 @@ async def assert_group_access(
         raise ForbiddenException("This record is not associated with a group")
     if target_group_id != scope:
         raise ForbiddenException("Operation is limited to your own group")
+
+
+async def member_group_ids(db: AsyncSession, member_id: UUID) -> set[UUID]:
+    result = await db.execute(
+        select(MemberGroupMembership.group_id).where(
+            MemberGroupMembership.member_id == member_id
+        )
+    )
+    return set(result.scalars().all())
+
+
+async def member_in_group(
+    db: AsyncSession, member: Member, group_id: UUID | None
+) -> bool:
+    if group_id is None:
+        return False
+    if member.group_id == group_id:
+        return True
+    return group_id in await member_group_ids(db, member.id)
+
+
+async def assert_member_access(
+    db: AsyncSession, user: User, member: Member
+) -> None:
+    """Allow a Group Admin to manage a member in any of their memberships."""
+    scope = await get_admin_scope(db, user)
+    if scope is None:
+        return
+    if await member_in_group(db, member, scope):
+        return
+    raise ForbiddenException("Operation is limited to your own group")
 
 
 async def scope_group_filter(

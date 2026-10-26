@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from app.models.family import FamilyMember
     from app.models.group import SocialGroup
     from app.models.location import Location
+    from app.models.member_group import MemberGroupMembership
     from app.models.professional import ProfessionalInformation
     from app.models.user import User
 
@@ -106,6 +107,12 @@ class Member(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
 
     user: Mapped[User | None] = relationship(back_populates="member", lazy="selectin")
     group: Mapped[SocialGroup | None] = relationship(back_populates="members")
+    group_memberships: Mapped[list[MemberGroupMembership]] = relationship(
+        back_populates="member",
+        lazy="selectin",
+        order_by="MemberGroupMembership.priority",
+        cascade="all, delete-orphan",
+    )
     location: Mapped[Location | None] = relationship(back_populates="members")
     family_members: Mapped[list[FamilyMember]] = relationship(
         back_populates="member", lazy="selectin"

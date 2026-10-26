@@ -3,9 +3,10 @@
 Adding a member to a group mints ``members.membership_number`` from that
 group's own counter (``member_id_counters``), the same atomic upsert that
 backs Group IDs. These tests pin down the contract for *every* state/city:
-creation with a group, adding through ``POST /groups/{id}/members``, moves
-between groups, idempotent re-adds, removal, client-supplied values being
-ignored, and uniqueness under concurrency.
+creation with one or more groups, adding through
+``POST /groups/{id}/members`` as a secondary membership, primary promotion,
+idempotent re-adds, removal, client-supplied values being ignored, and
+uniqueness under concurrency.
 """
 
 from __future__ import annotations
@@ -279,7 +280,7 @@ def test_adding_the_same_member_twice_keeps_the_same_id(client, auth):
     assert second["membership_number"] == group["group_id"] + "001"
 
 
-def test_removing_and_readding_a_member_keeps_their_id(client, auth):
+def test_removing_and_readding_a_member_gets_a_fresh_id(client, auth):
     group = _create_group(client, auth, f"Readd Member {uuid4().hex[:8]}")
     member = _create_member(client, auth)
     added = _add_to_group(client, auth, group, member)
@@ -290,29 +291,118 @@ def test_removing_and_readding_a_member_keeps_their_id(client, auth):
     )
     assert removed.status_code == 200, removed.text
     readded = _add_to_group(client, auth, group, member)
-    assert readded["membership_number"] == number
+    assert readded["membership_number"] != number
+    assert readded["membership_number"] == group["group_id"] + "002"
 
 
-def test_moving_a_member_between_groups_issues_a_new_id(client, auth):
-    group_a = _create_group(client, auth, f"Move A {uuid4().hex[:8]}")
-    group_b = _create_group(client, auth, f"Move B {uuid4().hex[:8]}", **NASHIK)
+def test_adding_a_second_group_keeps_the_primary_member_id(client, auth):
+    group_a = _create_group(client, auth, f"Add A {uuid4().hex[:8]}")
+    group_b = _create_group(client, auth, f"Add B {uuid4().hex[:8]}", **NASHIK)
     member = _create_member(client, auth, group_id=group_a["id"])
     first_number = member["membership_number"]
     _assert_member_id(first_number, group_a["group_id"])
 
-    moved = _add_to_group(client, auth, group_b, member)
-    second_number = _assert_member_id(
-        moved["membership_number"], group_b["group_id"]
-    )
-    assert second_number != first_number
+    added = _add_to_group(client, auth, group_b, member)
+    assert added["membership_number"] == first_number
+    assert added["group_id"] == group_a["id"]
+    assert added["group_ids"] == [group_a["id"], group_b["id"]]
 
-    # Back to the original group: a fresh number from that counter, never the
-    # old one recycled out of the pool.
-    moved_back = _add_to_group(client, auth, group_a, member)
-    third_number = _assert_member_id(
-        moved_back["membership_number"], group_a["group_id"]
+    detail = client.get(f"/api/v1/members/{member['id']}", headers=auth)
+    assert detail.status_code == 200, detail.text
+    data = detail.json()["data"]
+    assert data["group_id"] == group_a["id"]
+    assert data["membership_number"] == first_number
+    memberships = [
+        (row["group_id"], row["priority"]) for row in data["group_memberships"]
+    ]
+    assert memberships == [(group_a["id"], 1), (group_b["id"], 2)]
+
+    removed = client.delete(
+        f"/api/v1/groups/{group_b['id']}/members/{member['id']}", headers=auth
     )
-    assert third_number != first_number
+    assert removed.status_code == 200, removed.text
+    detail = client.get(f"/api/v1/members/{member['id']}", headers=auth)
+    assert detail.json()["data"]["membership_number"] == first_number
+
+
+def test_removing_the_primary_promotes_the_next_group(client, auth):
+    group_a = _create_group(client, auth, f"Primary A {uuid4().hex[:8]}")
+    group_b = _create_group(client, auth, f"Primary B {uuid4().hex[:8]}", **NASHIK)
+    member = _create_member(client, auth, group_id=group_a["id"])
+    _add_to_group(client, auth, group_b, member)
+
+    removed = client.delete(
+        f"/api/v1/groups/{group_a['id']}/members/{member['id']}", headers=auth
+    )
+    assert removed.status_code == 200, removed.text
+    detail = client.get(f"/api/v1/members/{member['id']}", headers=auth)
+    data = detail.json()["data"]
+    _assert_member_id(data["membership_number"], group_b["group_id"])
+    assert data["group_id"] == group_b["id"]
+    assert [row["group_id"] for row in data["group_memberships"]] == [group_b["id"]]
+
+    removed = client.delete(
+        f"/api/v1/groups/{group_b['id']}/members/{member['id']}", headers=auth
+    )
+    assert removed.status_code == 200, removed.text
+    detail = client.get(f"/api/v1/members/{member['id']}", headers=auth)
+    data = detail.json()["data"]
+    assert data["group_id"] is None
+    assert data["membership_number"] is None
+    assert data["group_memberships"] == []
+
+
+def test_member_can_be_created_in_multiple_groups(client, auth):
+    group_a = _create_group(client, auth, f"Create A {uuid4().hex[:8]}")
+    group_b = _create_group(client, auth, f"Create B {uuid4().hex[:8]}", **NASHIK)
+    member = _create_member(
+        client,
+        auth,
+        group_ids=[group_a["id"], group_b["id"]],
+    )
+
+    _assert_member_id(member["membership_number"], group_a["group_id"])
+    assert member["group_id"] == group_a["id"]
+    assert [row["group_id"] for row in member["group_memberships"]] == [
+        group_a["id"],
+        group_b["id"],
+    ]
+
+
+def test_updating_group_selection_promotes_a_new_primary(client, auth):
+    group_a = _create_group(client, auth, f"Patch A {uuid4().hex[:8]}")
+    group_b = _create_group(client, auth, f"Patch B {uuid4().hex[:8]}", **NASHIK)
+    member = _create_member(client, auth, group_id=group_a["id"])
+
+    added = client.patch(
+        f"/api/v1/members/{member['id']}",
+        json={"group_ids": [group_a["id"], group_b["id"]]},
+        headers=auth,
+    )
+    assert added.status_code == 200, added.text
+    data = added.json()["data"]
+    assert data["membership_number"] == member["membership_number"]
+    assert [row["group_id"] for row in data["group_memberships"]] == [
+        group_a["id"],
+        group_b["id"],
+    ]
+
+    removed_primary = client.patch(
+        f"/api/v1/members/{member['id']}",
+        json={"group_ids": [group_b["id"]]},
+        headers=auth,
+    )
+    assert removed_primary.status_code == 200, removed_primary.text
+    data = removed_primary.json()["data"]
+    _assert_member_id(data["membership_number"], group_b["group_id"])
+    assert data["group_id"] == group_b["id"]
+
+    empty = client.patch(
+        f"/api/v1/members/{member['id']}",
+        json={"group_ids": []},
+        headers=auth,
+    )
+    assert empty.status_code == 400, empty.text
 
 
 def test_each_group_counts_its_members_independently(client, auth):

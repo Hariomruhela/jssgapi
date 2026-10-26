@@ -30,6 +30,8 @@ from app.core.security import (
 from app.integrations.firebase import verify_id_token as firebase_verify_id_token
 from app.integrations.msg91 import send_otp as msg91_send_otp
 from app.integrations.sms import is_dev_sms, send_otp
+from app.models.group import SocialGroup
+from app.models.member_group import MemberGroupMembership
 from app.models.otp_code import OtpCode
 from app.models.user import RefreshToken, Role, User
 from app.repositories.member_repository import MemberRepository
@@ -89,34 +91,18 @@ class AuthService:
         email: str | None,
         password: str,
         phone_number: str,
-        id_token: str,
+        group_id: UUID | None = None,
+        group_name: str | None = None,
         ip_address: str | None = None,
         user_agent: str | None = None,
     ) -> dict:
-        """Register a user whose phone was verified by Firebase.
-
-        Only the Admin SDK's decoded token claims are trusted: the phone
-        number and uid come from Firebase, never from the client. The
-        backend never sends, generates, or verifies an OTP itself.
-        """
+        """Register a new user with the phone number supplied by the client."""
         full_name = full_name.strip()
         if not full_name:
             raise BadRequestException("Full name cannot be empty")
         email = email.strip().lower() if email else None
 
-        provided_phone = normalize_phone_number(phone_number)
-        claims = firebase_verify_id_token(id_token)
-        firebase_uid = claims.get("uid") or claims.get("sub") or claims.get("user_id")
-        verified_phone = claims.get("phone_number")
-        if not firebase_uid or not verified_phone:
-            raise UnauthorizedException(
-                "Firebase token does not contain a verified phone number"
-            )
-        verified_phone = normalize_phone_number(str(verified_phone))
-        if verified_phone != provided_phone:
-            raise UnauthorizedException(
-                "Verified phone number does not match the provided phone number"
-            )
+        verified_phone = normalize_phone_number(phone_number)
 
         existing = await self.users.get_by_phone(verified_phone)
         if existing is not None:
@@ -131,29 +117,76 @@ class AuthService:
         if role_row is None:
             raise BadRequestException("Role is not configured yet")
 
+        selected_group = None
+        if group_id is not None:
+            result = await self.session.execute(
+                select(SocialGroup).where(
+                    SocialGroup.id == group_id, SocialGroup.is_deleted.is_(False)
+                )
+            )
+            selected_group = result.scalar_one_or_none()
+            if selected_group is None:
+                raise BadRequestException("Selected group not found")
+        elif group_name is not None and group_name.strip():
+            cleaned_name = group_name.strip().casefold()
+            result = await self.session.execute(
+                select(SocialGroup).where(
+                    func.lower(func.trim(SocialGroup.name)) == cleaned_name,
+                    SocialGroup.is_deleted.is_(False),
+                )
+            )
+            selected_group = result.scalars().first()
+            if selected_group is None:
+                raise BadRequestException("Selected group not found")
+
+        selected_group_id = selected_group.id if selected_group is not None else None
+        selected_group_name = selected_group.name if selected_group is not None else None
+
         user = await self.users.create(
             email=email,
             full_name=full_name,
             phone_number=verified_phone,
-            firebase_uid=firebase_uid,
             password_hash=hash_password(password),
-            is_active=True,
+            is_active=False,
             is_phone_verified=True,
             role_id=role_row.id,
+            group_id=selected_group_id,
         )
+        if selected_group is not None:
+            user.group = selected_group
 
         name_parts = full_name.strip().split(maxsplit=1)
         first_name = name_parts[0]
         last_name = name_parts[1] if len(name_parts) > 1 else name_parts[0]
 
-        await self.members.create(
+        profile_data: dict[str, Any] = {
+            "full_name": full_name,
+            "phone": verified_phone,
+        }
+        if selected_group_name:
+            profile_data["social_group_name"] = selected_group_name
+        if email:
+            profile_data["email"] = email
+
+        member = await self.members.create(
             user_id=user.id,
+            group_id=selected_group_id,
             first_name=first_name,
             last_name=last_name,
             contact_email=email,
             contact_phone=verified_phone,
             membership_status=MemberStatus.PENDING.value,
+            profile_data=profile_data,
         )
+
+        if selected_group is not None:
+            membership = MemberGroupMembership(
+                member_id=member.id,
+                group_id=selected_group.id,
+                priority=1,
+                joined_at=datetime.now(UTC),
+            )
+            self.session.add(membership)
 
         await self.audit.log(
             AuditAction.REGISTER,
@@ -163,7 +196,38 @@ class AuthService:
         )
         await self.session.flush()
 
-        return await self._issue_tokens(user, ip_address, user_agent)
+        return {
+            "user": user,
+            "message": "Your registration is pending approval by the Group Admin. Please wait for approval before logging in.",
+            "tokens": None,
+        }
+
+    async def _assert_user_approved(self, user: User) -> None:
+        member = await self.members.get_by_user_id(user.id)
+        if member is not None:
+            if member.membership_status == MemberStatus.REJECTED.value:
+                reason = member.rejection_reason
+                detail = (
+                    f"Your registration has been rejected. Reason: {reason}"
+                    if reason
+                    else "Your registration has been rejected by the Group Admin."
+                )
+                raise ForbiddenException(detail)
+            if (
+                member.membership_status == MemberStatus.PENDING.value
+                or not user.is_active
+            ):
+                raise ForbiddenException(
+                    "Your registration is pending approval by the Group Admin. Please wait for approval before logging in."
+                )
+            if member.membership_status != MemberStatus.APPROVED.value:
+                raise ForbiddenException(
+                    "Your registration is pending approval by the Group Admin. Please wait for approval before logging in."
+                )
+        elif not user.is_active:
+            raise ForbiddenException(
+                "Your registration is pending approval by the Group Admin. Please wait for approval before logging in."
+            )
 
     async def _login_existing_firebase_user(
         self,
@@ -231,11 +295,12 @@ class AuthService:
                     "Firebase token does not contain a verified phone number"
                 )
             normalized = normalize_phone_number(str(verified_phone))
-            user = await self.users.get_active_by_phone(normalized)
-            if user is None:
+            user = await self._get_user_by_phone_forms(normalized)
+            if user is None or user.is_deleted:
                 raise UnauthorizedException(
                     "Invalid phone number or password"
                 )
+            await self._assert_user_approved(user)
             return await self._login_existing_firebase_user(
                 user,
                 firebase_uid,
@@ -249,17 +314,18 @@ class AuthService:
             raise UnauthorizedException("Invalid email or phone number or password")
 
         if phone_number:
-            user = await self.users.get_active_by_phone(
-                normalize_phone_number(phone_number)
-            )
+            normalized = normalize_phone_number(phone_number)
+            user = await self._get_user_by_phone_forms(normalized)
             credentials = "Invalid phone number or password"
         else:
             assert email is not None
-            user = await self.users.get_active_by_email(email.strip().lower())
+            user = await self.users.get_by_email(email.strip().lower())
             credentials = "Invalid email or password"
 
-        if user is None or not verify_password(password, user.password_hash):
+        if user is None or user.is_deleted or not verify_password(password, user.password_hash):
             raise UnauthorizedException(credentials)
+
+        await self._assert_user_approved(user)
 
         user.last_login_at = datetime.now(UTC)
         await self.session.flush()
@@ -288,10 +354,9 @@ class AuthService:
             )
 
         user = await self._get_user_by_phone_forms(str(verified_phone))
-        if user is None:
+        if user is None or user.is_deleted:
             raise UserNotFoundException()
-        if not user.is_active:
-            raise UnauthorizedException("Account is not active")
+        await self._assert_user_approved(user)
 
         return await self._login_existing_firebase_user(
             user,
