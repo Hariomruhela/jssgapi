@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any
 
 from sqlalchemy import func, select, update
@@ -50,6 +52,21 @@ NAME_MAX = 255
 _NON_GROUP_VALUES = frozenset({"no", "yes"})
 _BLOOD_GROUP = re.compile(r"(?:a|b|ab|o)\s*[+\-−]", re.IGNORECASE)
 
+_SHEET_GROUPS_CACHE: list[dict[str, Any]] | None = None
+_SHEET_GROUPS_CACHE_TIME: float = 0.0
+_SHEET_GROUPS_CACHE_KEY: str | None = None
+_SHEET_GROUPS_TTL: float = 300.0  # 5 minutes
+_SHEET_GROUPS_LOCK = Lock()
+
+
+def clear_sheet_groups_cache() -> None:
+    """Clear cached sheet groups (e.g. after sync or in tests)."""
+    global _SHEET_GROUPS_CACHE, _SHEET_GROUPS_CACHE_TIME, _SHEET_GROUPS_CACHE_KEY
+    with _SHEET_GROUPS_LOCK:
+        _SHEET_GROUPS_CACHE = None
+        _SHEET_GROUPS_CACHE_TIME = 0.0
+        _SHEET_GROUPS_CACHE_KEY = None
+
 
 def _slugify(name: str) -> str:
     """A stable, URL-safe id for a group name that has no row id."""
@@ -57,13 +74,15 @@ def _slugify(name: str) -> str:
     return slug[:80].strip("-") or "group"
 
 
-def read_sheet_groups() -> list[dict[str, Any]]:
+def read_sheet_groups(force_refresh: bool = False) -> list[dict[str, Any]]:
     """Every distinct, non-placeholder group value on the sheet.
 
     Returns ``{"id", "name", "field"}`` items sorted by name. Two values that
     only differ in case are one group; the same name under both columns stays
     twice, because the two columns mean different things.
+    Cached for up to 5 minutes to avoid redundant Google Sheets API roundtrips.
     """
+    global _SHEET_GROUPS_CACHE, _SHEET_GROUPS_CACHE_TIME, _SHEET_GROUPS_CACHE_KEY
     settings = get_settings()
     spreadsheet_id = (settings.google_sheets_spreadsheet_id or "").strip()
     if not spreadsheet_id:
@@ -71,6 +90,18 @@ def read_sheet_groups() -> list[dict[str, Any]]:
             "GOOGLE_SHEETS_SPREADSHEET_ID is not configured",
             "SHEETS_NOT_CONFIGURED",
         )
+
+    cache_key = f"{spreadsheet_id}:{settings.google_sheets_sheet_name}"
+    now = time.time()
+    if not force_refresh:
+        with _SHEET_GROUPS_LOCK:
+            if (
+                _SHEET_GROUPS_CACHE is not None
+                and _SHEET_GROUPS_CACHE_KEY == cache_key
+                and (now - _SHEET_GROUPS_CACHE_TIME) < _SHEET_GROUPS_TTL
+            ):
+                return [dict(i) for i in _SHEET_GROUPS_CACHE]
+
     table = GoogleSheetsService().read_table(
         spreadsheet_id,
         settings.google_sheets_sheet_name,
@@ -111,7 +142,13 @@ def read_sheet_groups() -> list[dict[str, Any]]:
                 counter += 1
             used_ids.add(unique)
             items.append({"id": unique, "name": name, "field": field})
-    return items
+
+    with _SHEET_GROUPS_LOCK:
+        _SHEET_GROUPS_CACHE = items
+        _SHEET_GROUPS_CACHE_TIME = time.time()
+        _SHEET_GROUPS_CACHE_KEY = cache_key
+
+    return [dict(i) for i in items]
 
 
 def sheet_social_group_names() -> list[str]:

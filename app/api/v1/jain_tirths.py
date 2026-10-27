@@ -169,7 +169,8 @@ async def list_jain_tirths(
         offset=(page - 1) * page_size,
     )
     images = JainTirthImageService(db)
-    data = [_tirth_out(t, await images.count_images(t)) for t in items]
+    counts = await images.batch_count_images(items)
+    data = [_tirth_out(t, counts.get(t.id, 0)) for t in items]
     return paginated(
         "Jain Tirths fetched successfully",
         data,

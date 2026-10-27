@@ -246,15 +246,13 @@ class ProfileService:
         """
         return self._build_profile(member)
 
-    def _build_profile(self, member: Member) -> ProfileOut:
+    def get_profile_dict(self, member: Member) -> dict[str, str | None]:
+        """Return the raw profile values dict, avoiding intermediate model instantiation."""
         values = self._fallback_values(member)
         profile_data = member.profile_data or {}
         for field, value in profile_data.items():
             if field in PROFILE_FIELDS:
                 values[field] = _as_string(value)
-        # Son/daughter slot 1 has two spellings of the same four values. Whichever
-        # spelling was actually stored wins over a value derived from a family
-        # record, so one member never reads back two different names.
         for canonical, legacy in PROFILE_FIELD_PAIRS:
             for source in (canonical, legacy):
                 stored = _as_string(profile_data.get(source))
@@ -262,6 +260,10 @@ class ProfileService:
                     values[canonical] = stored
                     values[legacy] = stored
                     break
+        return values
+
+    def _build_profile(self, member: Member) -> ProfileOut:
+        values = self.get_profile_dict(member)
         return ProfileOut(**values)
 
     def _fallback_values(self, member: Member) -> dict[str, str | None]:

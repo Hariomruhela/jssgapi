@@ -37,6 +37,22 @@ class EventImageRepository(BaseRepository[EventImage]):
         )
         return int(result.scalar_one())
 
+    async def batch_count_for_events(
+        self, event_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, int]:
+        if not event_ids:
+            return {}
+        result = await self.session.execute(
+            select(EventImage.event_id, func.count())
+            .where(
+                EventImage.event_id.in_(event_ids),
+                EventImage.is_deleted.is_(False),
+            )
+            .group_by(EventImage.event_id)
+        )
+        counts = dict(result.all())
+        return {eid: counts.get(eid, 0) for eid in event_ids}
+
     async def get_by_id(self, instance_id: uuid.UUID) -> EventImage | None:
         result = await self.session.execute(
             select(EventImage).where(

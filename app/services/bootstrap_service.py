@@ -161,7 +161,14 @@ async def _seed_geo_data(session: AsyncSession) -> None:
     )
 
 
+_bootstrapped = False
+
+
 async def bootstrap_app(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    global _bootstrapped
+    if _bootstrapped:
+        return
+
     async with session_factory() as session:
         try:
             # Reconcile the live schema before anything reads it. Vercel has no
@@ -173,7 +180,6 @@ async def bootstrap_app(session_factory: async_sessionmaker[AsyncSession]) -> No
             await session.rollback()
             logger.exception("Schema guard failed")
 
-    async with session_factory() as session:
         try:
             permission_models = await _seed_permissions(session)
             role_models = await _seed_roles(session, permission_models)
@@ -186,7 +192,6 @@ async def bootstrap_app(session_factory: async_sessionmaker[AsyncSession]) -> No
             await session.rollback()
             logger.exception("Bootstrap failed")
 
-    async with session_factory() as session:
         try:
             await _seed_geo_data(session)
             await session.commit()
@@ -197,6 +202,8 @@ async def bootstrap_app(session_factory: async_sessionmaker[AsyncSession]) -> No
             logger.exception(
                 "Geo master data seeding failed; run scripts/import_geo_data.py"
             )
+
+    _bootstrapped = True
 
 
 def _role_descriptions() -> dict[str, str]:

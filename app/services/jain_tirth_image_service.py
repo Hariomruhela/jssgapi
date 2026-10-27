@@ -56,6 +56,11 @@ class JainTirthImageService:
     async def count_images(self, tirth: JainTirth) -> int:
         return await self.repo.count_for_tirth(tirth.id)
 
+    async def batch_count_images(
+        self, tirths: list[JainTirth]
+    ) -> dict[uuid.UUID, int]:
+        return await self.repo.batch_count_for_tirths([t.id for t in tirths])
+
     async def upload_images(
         self,
         tirth: JainTirth,

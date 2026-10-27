@@ -45,12 +45,25 @@ async def get_access_scope(db: AsyncSession, user: User) -> AccessScope:
 
     Write paths use :func:`get_admin_scope`, which rejects MEMBER outright. Read
     paths use this, because a member legitimately reads their own group.
+    Cached on the user instance for the duration of the request.
     """
+    cached = getattr(user, "_cached_access_scope", None)
+    if cached is not None:
+        return cached
+
     if not user.role:
         raise ForbiddenException("No role assigned")
     role = resolve_role_name(user.role.name)
     if role in UNRESTRICTED_ROLES:
-        return AccessScope(unrestricted=True)
+        scope = AccessScope(unrestricted=True)
+        user._cached_access_scope = scope
+        return scope
+
+    # If GROUP_ADMIN already has group_id set on the User account, return without querying Member
+    if role in SCOPED_ROLES and user.group_id is not None:
+        scope = AccessScope(unrestricted=False, group_id=user.group_id)
+        user._cached_access_scope = scope
+        return scope
 
     result = await db.execute(select(Member).where(Member.user_id == user.id))
     member = result.scalar_one_or_none()
@@ -59,14 +72,18 @@ async def get_access_scope(db: AsyncSession, user: User) -> AccessScope:
     if role in SCOPED_ROLES:
         if group_id is None:
             raise ForbiddenException("Your account is not associated with a group")
-        return AccessScope(unrestricted=False, group_id=group_id)
+        scope = AccessScope(unrestricted=False, group_id=group_id)
+        user._cached_access_scope = scope
+        return scope
 
     if role is RoleName.MEMBER:
-        return AccessScope(
+        scope = AccessScope(
             unrestricted=False,
             group_id=group_id,
             member_id=member.id if member is not None else None,
         )
+        user._cached_access_scope = scope
+        return scope
 
     raise ForbiddenException("Operation not allowed for this role")
 
@@ -77,20 +94,27 @@ async def get_admin_scope(db: AsyncSession, user: User) -> UUID | None:
     The group is read from ``User.group_id``, which a SUPER_ADMIN sets through
     ``POST /groups/{id}/admins``. ``Member.group_id`` is accepted as a fallback so
     Group Admins provisioned before that column existed keep working.
+    Cached on the user instance for the duration of the request.
     """
+    if hasattr(user, "_cached_admin_scope"):
+        return user._cached_admin_scope
+
     if not user.role:
         raise ForbiddenException("No role assigned")
     role = resolve_role_name(user.role.name)
     if role in UNRESTRICTED_ROLES:
+        user._cached_admin_scope = None
         return None
     if role not in SCOPED_ROLES:
         raise ForbiddenException("Operation not allowed for this role")
     if user.group_id is not None:
+        user._cached_admin_scope = user.group_id
         return user.group_id
     result = await db.execute(select(Member).where(Member.user_id == user.id))
     member = result.scalar_one_or_none()
     if member is None or member.group_id is None:
         raise ForbiddenException("Your account is not associated with a group")
+    user._cached_admin_scope = member.group_id
     return member.group_id
 
 

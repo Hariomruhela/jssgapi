@@ -75,7 +75,7 @@ def _member_out(member: Member) -> MemberOut:
 
 def _member_list_item(member: Member, profiles: ProfileService) -> MemberListItemOut:
     out_dict = _member_out(member).model_dump()
-    prof_dict = profiles.build_profile(member).model_dump()
+    prof_dict = profiles.get_profile_dict(member)
     merged = {**out_dict, **prof_dict}
     merged["member_id"] = member.id
     merged["status"] = member.membership_status

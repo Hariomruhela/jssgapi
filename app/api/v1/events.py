@@ -220,7 +220,8 @@ async def list_events(
         offset=(page - 1) * page_size,
     )
     images = EventImageService(db)
-    data = [_event_out(e, await images.count_images(e)) for e in items]
+    counts = await images.batch_count_images(items)
+    data = [_event_out(e, counts.get(e.id, 0)) for e in items]
     return paginated(
         "Events fetched successfully",
         data,
@@ -284,7 +285,8 @@ async def _list_by_frame(
         limit=limit,
     )
     images = EventImageService(db)
-    data = [_event_out(e, await images.count_images(e)) for e in items]
+    counts = await images.batch_count_images(items)
+    data = [_event_out(e, counts.get(e.id, 0)) for e in items]
     return ok(f"{frame.value.title()} events fetched successfully", data)
 
 

@@ -69,6 +69,11 @@ class EventImageService:
     async def count_images(self, event: Event) -> int:
         return await self.repo.count_for_event(event.id)
 
+    async def batch_count_images(
+        self, events: list[Event]
+    ) -> dict[uuid.UUID, int]:
+        return await self.repo.batch_count_for_events([e.id for e in events])
+
     async def upload_images(
         self,
         event: Event,

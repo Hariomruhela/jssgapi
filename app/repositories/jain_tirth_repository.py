@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Select, func, or_, select
 
 from app.core.constants import EventStatus
 from app.models.jain_tirth import JainTirth
@@ -117,7 +117,7 @@ class JainTirthRepository(BaseRepository[JainTirth]):
         search: str | None = None,
         public_only: bool = False,
     ) -> int:
-        stmt = select(JainTirth.id).where(
+        stmt = select(func.count()).select_from(JainTirth).where(
             *self._clauses(
                 group_id=group_id,
                 ungrouped_only=ungrouped_only,
@@ -128,4 +128,4 @@ class JainTirthRepository(BaseRepository[JainTirth]):
             )
         )
         result = await self.session.execute(stmt)
-        return len(result.all())
+        return int(result.scalar_one())

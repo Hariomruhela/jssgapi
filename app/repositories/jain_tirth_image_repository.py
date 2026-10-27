@@ -39,6 +39,22 @@ class JainTirthImageRepository(BaseRepository[JainTirthImage]):
         )
         return int(result.scalar_one())
 
+    async def batch_count_for_tirths(
+        self, tirth_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, int]:
+        if not tirth_ids:
+            return {}
+        result = await self.session.execute(
+            select(JainTirthImage.jain_tirth_id, func.count())
+            .where(
+                JainTirthImage.jain_tirth_id.in_(tirth_ids),
+                JainTirthImage.is_deleted.is_(False),
+            )
+            .group_by(JainTirthImage.jain_tirth_id)
+        )
+        counts = dict(result.all())
+        return {tid: counts.get(tid, 0) for tid in tirth_ids}
+
     async def get_by_id(self, instance_id: uuid.UUID) -> JainTirthImage | None:
         result = await self.session.execute(
             select(JainTirthImage).where(

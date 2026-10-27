@@ -16,7 +16,9 @@ applies.
 
 from __future__ import annotations
 
+import time
 from datetime import date, datetime
+from threading import Lock
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
@@ -47,6 +49,17 @@ CELEBRATION_LOADS = (
     selectinload(Member.family_members),
     selectinload(Member.professional_info),
 )
+
+_CELEBRATION_CACHE_TTL = 120.0  # 2 minutes
+_BIRTHDAY_CACHE: dict[tuple, tuple[float, list[BirthdayOut]]] = {}
+_ANNIVERSARY_CACHE: dict[tuple, tuple[float, list[AnniversaryOut]]] = {}
+_CELEBRATION_CACHE_LOCK = Lock()
+
+
+def clear_celebration_cache() -> None:
+    with _CELEBRATION_CACHE_LOCK:
+        _BIRTHDAY_CACHE.clear()
+        _ANNIVERSARY_CACHE.clear()
 
 
 def _parse_date(value: Any) -> date | None:
@@ -120,6 +133,19 @@ class CelebrationService:
     # public API
     # ------------------------------------------------------------------
     async def birthdays(self, scope: AccessScope, target: date) -> list[BirthdayOut]:
+        cache_key = (
+            target.isoformat(),
+            scope.unrestricted,
+            str(scope.group_id),
+            str(scope.member_id),
+        )
+        now = time.time()
+        with _CELEBRATION_CACHE_LOCK:
+            if cache_key in _BIRTHDAY_CACHE:
+                cached_time, cached_items = _BIRTHDAY_CACHE[cache_key]
+                if now - cached_time < _CELEBRATION_CACHE_TTL:
+                    return list(cached_items)
+
         members = await self._candidates(scope, self._birthday_candidates())
         items: list[BirthdayOut] = []
         for member in members:
@@ -150,11 +176,26 @@ class CelebrationService:
                         **common,
                     )
                 )
+        with _CELEBRATION_CACHE_LOCK:
+            _BIRTHDAY_CACHE[cache_key] = (now, items)
         return items
 
     async def anniversaries(
         self, scope: AccessScope, target: date
     ) -> list[AnniversaryOut]:
+        cache_key = (
+            target.isoformat(),
+            scope.unrestricted,
+            str(scope.group_id),
+            str(scope.member_id),
+        )
+        now = time.time()
+        with _CELEBRATION_CACHE_LOCK:
+            if cache_key in _ANNIVERSARY_CACHE:
+                cached_time, cached_items = _ANNIVERSARY_CACHE[cache_key]
+                if now - cached_time < _CELEBRATION_CACHE_TTL:
+                    return list(cached_items)
+
         members = await self._candidates(scope, self._anniversary_candidates())
         items: list[AnniversaryOut] = []
         for member in members:
@@ -172,6 +213,8 @@ class CelebrationService:
                     **_common_fields(member),
                 )
             )
+        with _CELEBRATION_CACHE_LOCK:
+            _ANNIVERSARY_CACHE[cache_key] = (now, items)
         return items
 
     # ------------------------------------------------------------------

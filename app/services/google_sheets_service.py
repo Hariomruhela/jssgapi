@@ -77,29 +77,49 @@ def _credentials_from_adc(scopes: list[str]) -> Any:
     return credentials
 
 
+_CREDENTIALS_CACHE: dict[tuple, Any] = {}
+
+
 def load_google_credentials(settings: Any, scopes: list[str]) -> Any:
     """Resolve service-account credentials for ``scopes``, without logging them.
 
     Single source of truth for every Google call in the project: the sheet sync
     and the Drive photo migration read the same env var and the same key file
-    and differ only in the scopes they ask for.
+    and differ only in the scopes they ask for. Cached in memory so RSA key
+    parsing runs once instead of on every request.
     """
-    inline = (settings.google_sheets_service_account_json or "").strip()
+    cache_key = (
+        (settings.google_sheets_service_account_json or "").strip(),
+        (settings.google_application_credentials or "").strip(),
+        tuple(sorted(scopes)),
+    )
+    if cache_key in _CREDENTIALS_CACHE:
+        return _CREDENTIALS_CACHE[cache_key]
+
+    inline = cache_key[0]
     if inline:
         logger.info("google credentials: inline service account json")
-        return _credentials_from_inline_json(inline, scopes)
-    path = (settings.google_application_credentials or "").strip()
+        creds = _credentials_from_inline_json(inline, scopes)
+        _CREDENTIALS_CACHE[cache_key] = creds
+        return creds
+    path = cache_key[1]
     if path:
         # Serverless hosts have no key file on disk, so the JSON itself is often
         # placed in GOOGLE_APPLICATION_CREDENTIALS. Accept it inline rather than
         # trying (and failing) to open it as a path.
         if path.lstrip().startswith("{"):
             logger.info("google credentials: inline json from application credentials")
-            return _credentials_from_inline_json(path, scopes)
+            creds = _credentials_from_inline_json(path, scopes)
+            _CREDENTIALS_CACHE[cache_key] = creds
+            return creds
         logger.info("google credentials: key file")
-        return _credentials_from_file(path, scopes)
+        creds = _credentials_from_file(path, scopes)
+        _CREDENTIALS_CACHE[cache_key] = creds
+        return creds
     logger.info("google credentials: application default credentials")
-    return _credentials_from_adc(scopes)
+    creds = _credentials_from_adc(scopes)
+    _CREDENTIALS_CACHE[cache_key] = creds
+    return creds
 
 _SPREADSHEET_ID_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
 _SPREADSHEET_URL_RE = re.compile(r"/spreadsheets/d/([A-Za-z0-9_-]+)")
@@ -176,6 +196,8 @@ class GoogleSheetsService:
         return load_google_credentials(self.settings, SCOPES)
 
     def _sheets_api(self) -> Any:
+        if getattr(self, "_client_instance", None) is not None:
+            return self._client_instance
         try:
             from googleapiclient.discovery import build
         except ImportError as exc:  # pragma: no cover - dependency guard
@@ -184,12 +206,13 @@ class GoogleSheetsService:
                 "Run: pip install -r requirements.txt"
             ) from exc
         try:
-            return build(
+            self._client_instance = build(
                 "sheets",
                 "v4",
                 credentials=self.credentials(),
                 cache_discovery=False,
             )
+            return self._client_instance
         except Exception as exc:
             raise ServiceUnavailableException(
                 f"Google Sheets authentication failed ({type(exc).__name__}): {exc}"
