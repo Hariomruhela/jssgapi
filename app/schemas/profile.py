@@ -84,8 +84,20 @@ class ProfileUpdate(BaseModel):
     email: str | None = None
 
 
+class ProfileGroupItem(BaseModel):
+    group_id: str | None = None
+    group_name: str | None = None
+    membership_number: str | None = None
+    is_primary: bool = False
+
+
 class ProfileOut(ProfileUpdate):
-    pass
+    model_config = ConfigDict(extra="ignore")
+
+    membership_number: str | None = None
+    group_id: str | None = None
+    group_name: str | None = None
+    groups: list[ProfileGroupItem] = []
 
 
 class ProfileResponse(BaseModel):

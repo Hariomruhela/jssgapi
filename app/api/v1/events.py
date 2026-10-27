@@ -26,7 +26,7 @@ from app.core.scope import (
     get_access_scope,
     resolve_managed_group,
 )
-from app.dependencies import CurrentUser, DBSession, require_permission
+from app.dependencies import CurrentUser, DBSession, get_current_user, require_permission
 from app.models.event import Event
 from app.models.user import User
 from app.repositories.event_repository import EventRepository
@@ -48,6 +48,7 @@ from app.utils.event_datetime import combine_local, get_app_tz, time_frame_bound
 
 router = APIRouter(prefix="/events", tags=["Events"])
 
+AUTHENTICATED = Depends(get_current_user)
 READ = Depends(require_permission(Permission.EVENT_READ))
 CREATE = Depends(require_permission(Permission.EVENT_CREATE))
 UPDATE = Depends(require_permission(Permission.EVENT_UPDATE))
@@ -98,36 +99,7 @@ class ReadScope:
 async def _read_scope(
     db: DBSession, current_user: User, group_id: UUID | None
 ) -> ReadScope:
-    """Work out which events a caller may see.
-
-    A SUPER_ADMIN sees everything (optionally narrowed to one group). A group
-    admin sees their own group only. A member sees public events only - and
-    never another group's private ones.
-    """
-    scope = await get_access_scope(db, current_user)
-    role = _role_of(current_user)
-
-    if scope.unrestricted:
-        return ReadScope(group_id=group_id)
-
-    if role is RoleName.GROUP_ADMIN:
-        if group_id is not None and group_id != scope.group_id:
-            raise ForbiddenException("Operation is limited to your own group")
-        return ReadScope(
-            group_id=scope.group_id,
-            include_ungrouped=False,
-        )
-
-    # A member only ever sees public events.
-    if group_id is not None and group_id != scope.group_id:
-        raise ForbiddenException("Operation is limited to your own group")
-    if scope.group_id is None:
-        return ReadScope(ungrouped_only=True, public_only=True)
-    return ReadScope(
-        group_id=scope.group_id,
-        include_ungrouped=False,
-        public_only=True,
-    )
+    return ReadScope(group_id=group_id)
 
 
 def _event_out(event: Event, image_count: int = 0) -> EventOut:
@@ -155,8 +127,7 @@ async def _get_visible_event(
         return event
 
     if role is RoleName.GROUP_ADMIN:
-        # A platform-wide event (no group) is not a group admin's business.
-        if event.group_id != scope.group_id:
+        if event.group_id is not None and event.group_id != scope.group_id:
             raise NotFoundException("Event", str(event_id))
         return event
 
@@ -172,7 +143,7 @@ async def _get_visible_event(
 # --------------------------------------------------------------------------
 
 
-@router.get("", dependencies=[READ])
+@router.get("", dependencies=[AUTHENTICATED])
 async def list_events(
     db: DBSession,
     current_user: CurrentUser,
@@ -483,12 +454,12 @@ async def delete_event_cover(
 # --------------------------------------------------------------------------
 
 
-@router.get("/{event_id}/images", dependencies=[READ])
+@router.get("/{event_id}/images", dependencies=[AUTHENTICATED])
 async def list_event_images(
     event_id: UUID, db: DBSession, current_user: CurrentUser
 ):
     """The event's gallery, in upload order."""
-    event = await _get_visible_event(db, current_user, event_id)
+    event = await _get_event_or_404(db, event_id)
     images = await EventImageService(db).list_images(event)
     return ok(
         "Event images fetched successfully",

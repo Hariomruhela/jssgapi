@@ -47,6 +47,8 @@ and an old number is never reissued.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -55,11 +57,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictException, ValidationException
 from app.models.geo import GeoCity, GeoState
-from app.models.group import GroupIdCounter, MemberIdCounter, SocialGroup
+from app.models.group import (
+    DistrictGroupCounter,
+    GroupIdCounter,
+    GroupMemberCounter,
+    MemberIdCounter,
+    SocialGroup,
+)
 from app.models.member import Member
-from app.services.rto_service import rto_code_for_city
+from app.models.member_group import GroupMember, MemberGroupMembership
+from app.services.rto_service import get_state_district_code, rto_code_for_city
 
-#: Sequences are zero padded to at least this many digits.
+#: Group sequence width (2 digits minimum, e.g. MP0901)
+GROUP_SEQUENCE_WIDTH = 2
+#: Member sequence width (3 digits minimum, e.g. MP0901001)
+MEMBER_SEQUENCE_WIDTH = 3
 SEQUENCE_WIDTH = 3
 
 
@@ -295,63 +307,157 @@ async def next_sequence(session: AsyncSession, city: CityCode) -> int:
     return int((await session.execute(statement)).scalar_one())
 
 
-async def next_group_id(session: AsyncSession, city: CityCode) -> str:
-    """The next Group ID for a city, e.g. ``MP04001`` then ``MP04002``."""
-    return format_group_id(city.prefix, await next_sequence(session, city))
-
-
-def format_group_id(prefix: str, sequence: int) -> str:
-    """``MP09`` + ``1`` -> ``MP09001``. Grows past three digits, never truncates."""
-    return f"{prefix}{sequence:0{SEQUENCE_WIDTH}d}"
-
-
-# --- member IDs (members.membership_number) ---------------------------------
-
-
-async def _highest_stored_member_sequence(
-    session: AsyncSession, group_id: str
+async def get_max_district_group_seq(
+    session: AsyncSession, state_code: str, district_code: str
 ) -> int:
-    """Find the highest integer sequence this group's members already carry."""
-    remainder = func.substr(Member.membership_number, len(group_id) + 1)
+    prefix = f"{state_code}{district_code}"
+    remainder = func.substring(SocialGroup.group_id, len(prefix) + 1)
     result = await session.execute(
         select(func.max(cast(remainder, Integer))).where(
-            Member.membership_number.like(f"{group_id}%"),
+            SocialGroup.group_id.like(f"{prefix}%"),
             remainder.op("~")("^[0-9]+$"),
         )
     )
     return int(result.scalar() or 0)
 
 
-async def _raise_member_counter_to_stored_highest(
-    session: AsyncSession, group_id: str
-) -> None:
-    """Never let the member counter fall behind the IDs the group already carries."""
-    highest = await _highest_stored_member_sequence(session, group_id)
-    if not highest:
-        return
-    await session.execute(
-        pg_insert(MemberIdCounter)
-        .values(group_id=group_id, last_value=highest)
-        .on_conflict_do_update(
-            index_elements=[MemberIdCounter.group_id],
-            set_={
-                "last_value": func.greatest(
-                    MemberIdCounter.last_value, highest
-                )
-            },
+async def next_district_group_id(
+    session: AsyncSession, state_code: str, district_code: str
+) -> str:
+    """Claim next Group ID for district using DistrictGroupCounter with FOR UPDATE lock."""
+    counter = (
+        await session.execute(
+            select(DistrictGroupCounter)
+            .where(
+                DistrictGroupCounter.state_code == state_code,
+                DistrictGroupCounter.district_code == district_code,
+            )
+            .with_for_update()
         )
+    ).scalar_one_or_none()
+
+    if not counter:
+        max_seq = await get_max_district_group_seq(session, state_code, district_code)
+        counter = DistrictGroupCounter(
+            state_code=state_code,
+            district_code=district_code,
+            last_group_seq=max_seq,
+        )
+        session.add(counter)
+        await session.flush()
+
+    counter.last_group_seq += 1
+    return format_group_id(f"{state_code}{district_code}", counter.last_group_seq)
+
+
+async def next_group_id(session: AsyncSession, city: CityCode) -> str:
+    """The next Group ID for a city/district, e.g. MP0901, MP0902."""
+    state_code, district_code = get_state_district_code(city.state, city.city)
+    return await next_district_group_id(session, state_code, district_code)
+
+
+def format_group_id(prefix: str, sequence: int) -> str:
+    """Pattern: {STATE_CODE}{DISTRICT_RTO_2DIGIT}{GROUP_SEQ_2DIGIT}, e.g. MP0901."""
+    return f"{prefix}{sequence:0{GROUP_SEQUENCE_WIDTH}d}"
+
+
+# --- member IDs (members.membership_number) ---------------------------------
+
+
+async def get_group_member_count(session: AsyncSession, group_uuid: UUID) -> int:
+    result = await session.execute(
+        select(func.count(GroupMember.id)).where(GroupMember.group_id == group_uuid)
+    )
+    count = result.scalar() or 0
+    if count == 0:
+        result_mem = await session.execute(
+            select(func.count(MemberGroupMembership.id)).where(
+                MemberGroupMembership.group_id == group_uuid
+            )
+        )
+        count = result_mem.scalar() or 0
+    return int(count)
+
+
+async def next_group_member_id(
+    session: AsyncSession, group: SocialGroup
+) -> str:
+    """Claim next member sequence within a group using GroupMemberCounter with FOR UPDATE lock."""
+    if not group.group_id:
+        raise ValidationException("Target group does not have a valid group_id")
+
+    counter = (
+        await session.execute(
+            select(GroupMemberCounter)
+            .where(GroupMemberCounter.group_uuid == group.id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+    if not counter:
+        existing_count = await get_group_member_count(session, group.id)
+        counter = GroupMemberCounter(
+            group_uuid=group.id,
+            last_member_seq=existing_count,
+        )
+        session.add(counter)
+        await session.flush()
+
+    counter.last_member_seq += 1
+    return format_member_id(group.group_id, counter.last_member_seq)
+
+
+def format_member_id(group_id: str, sequence: int) -> str:
+    """Pattern: {GROUP_ID}{MEMBER_SEQ_3DIGIT}, e.g. MP0901001."""
+    return f"{group_id}{sequence:0{MEMBER_SEQUENCE_WIDTH}d}"
+
+
+async def next_member_id(
+    session: AsyncSession, group_id: str, group_uuid: UUID | None = None
+) -> str:
+    """The next member ID for a group, e.g. MP0901001 then MP0901002."""
+    if group_uuid is not None:
+        group = await session.get(SocialGroup, group_uuid)
+        if group is not None:
+            return await next_group_member_id(session, group)
+    else:
+        result = await session.execute(
+            select(SocialGroup).where(SocialGroup.group_id == group_id)
+        )
+        group = result.scalar_one_or_none()
+        if group is not None:
+            return await next_group_member_id(session, group)
+
+    return format_member_id(
+        group_id, await next_member_sequence(session, group_id)
     )
 
 
 async def next_member_sequence(session: AsyncSession, group_id: str) -> int:
-    """Atomically claim the next member sequence inside one group.
+    result = await session.execute(
+        select(SocialGroup).where(SocialGroup.group_id == group_id)
+    )
+    group = result.scalar_one_or_none()
+    if group is not None:
+        counter = (
+            await session.execute(
+                select(GroupMemberCounter)
+                .where(GroupMemberCounter.group_uuid == group.id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not counter:
+            existing_count = await get_group_member_count(session, group.id)
+            counter = GroupMemberCounter(
+                group_uuid=group.id,
+                last_member_seq=existing_count,
+            )
+            session.add(counter)
+            await session.flush()
+        counter.last_member_seq += 1
+        return counter.last_member_seq
 
-    Same mechanism as :func:`next_sequence`, keyed by the Group ID instead of
-    the city prefix: concurrent ``POST /groups/{id}/members`` calls serialize on
-    the ``member_id_counters`` primary key, and a rolled-back request returns
-    its number because the increment rolls back with the transaction.
-    """
-    await _raise_member_counter_to_stored_highest(session, group_id)
+    # Fallback to member_id_counters
     statement = (
         pg_insert(MemberIdCounter)
         .values(group_id=group_id, last_value=1)
@@ -364,48 +470,16 @@ async def next_member_sequence(session: AsyncSession, group_id: str) -> int:
     return int((await session.execute(statement)).scalar_one())
 
 
-def format_member_id(group_id: str, sequence: int) -> str:
-    """``MP09001`` + ``1`` -> ``MP09001001``.
-
-    The member ID is always the owning group's ID followed by the per-group
-    sequence, so any member ID can be attributed to its group by the prefix.
-    Grows past three digits, never truncates or wraps.
-    """
-    return f"{group_id}{sequence:0{SEQUENCE_WIDTH}d}"
-
-
-async def next_member_id(session: AsyncSession, group_id: str) -> str:
-    """The next member ID for a group, e.g. ``MP09001001`` then ``MP09001002``."""
-    return format_member_id(
-        group_id, await next_member_sequence(session, group_id)
-    )
-
-
 def membership_number_matches(
     membership_number: str | None, group_id: str
 ) -> bool:
-    """Whether a stored member ID was issued by this group.
-
-    ``True`` only when the number is this Group ID followed by a digit-only
-    sequence (``MP09001001`` for ``MP09001``); ``False`` for ``None``, for a
-    number from a different group (the member is moving between groups), or
-    for a client-supplied value that never came from a counter. The check is
-    prefix-based by construction: member IDs are *built* as
-    ``group_id + sequence``, so this never has to parse or guess.
-    """
     if not membership_number or not membership_number.startswith(group_id):
         return False
     remainder = membership_number[len(group_id):]
-    return len(remainder) >= SEQUENCE_WIDTH and remainder.isdigit()
+    return len(remainder) >= MEMBER_SEQUENCE_WIDTH and remainder.isdigit()
 
 
 def _is_membership_number_violation(exc: IntegrityError) -> bool:
-    """True when the unique constraint on ``members.membership_number`` fired.
-
-    Same shape as ``_is_group_id_violation`` in the groups API: match the
-    constraint name when the driver exposes it, otherwise the message, so a
-    violation of some other constraint keeps its usual path.
-    """
     constraint = getattr(getattr(exc, "orig", None), "constraint_name", None)
     return "membership_number" in (constraint or "") or "membership_number" in str(
         exc
@@ -413,27 +487,112 @@ def _is_membership_number_violation(exc: IntegrityError) -> bool:
 
 
 async def assign_member_id(
-    session: AsyncSession, member: Member, group: SocialGroup
+    session: AsyncSession,
+    member: Member,
+    group: SocialGroup,
+    user_id: UUID | None = None,
 ) -> bool:
-    """Give a member their ID for the group they are in, then persist it.
-
-    Called on every path that puts a member into a group (creation with a
-    group, adding/moving via ``POST /groups/{id}/members``). Idempotent: a
-    member who already carries an ID issued by this group keeps it, a member
-    entering a different group gets a fresh ID from the new group's counter
-    (the old number is never returned to the pool), and a member with no ID
-    yet (created before member IDs existed) is backfilled on first touch.
-
-    The flush runs here so the counter claim, the number and any pending group
-    change commit or roll back as one unit; the unique backstop on
-    ``membership_number`` turns the (theoretical) hand-inserted collision into
-    a 409 instead of a duplicate ID.
-    """
-    if not group.group_id or membership_number_matches(
-        member.membership_number, group.group_id
-    ):
+    """Assign group-specific member ID and update primary membership if needed."""
+    if not group.group_id:
         return False
-    member.membership_number = await next_member_id(session, group.group_id)
+
+    uid = user_id or member.user_id
+
+    # Check if this member/user already has a membership number in this group
+    existing_gm = None
+    if uid:
+        existing_gm = (
+            await session.execute(
+                select(GroupMember).where(
+                    GroupMember.user_id == uid,
+                    GroupMember.group_id == group.id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    existing_mgm = (
+        await session.execute(
+            select(MemberGroupMembership).where(
+                MemberGroupMembership.member_id == member.id,
+                MemberGroupMembership.group_id == group.id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if existing_gm and existing_gm.membership_number:
+        num = existing_gm.membership_number
+    elif existing_mgm and existing_mgm.membership_number:
+        num = existing_mgm.membership_number
+    elif membership_number_matches(member.membership_number, group.group_id):
+        num = member.membership_number
+    else:
+        num = await next_group_member_id(session, group)
+
+    # Determine if primary
+    has_primary = False
+    if uid:
+        primary_gm = (
+            await session.execute(
+                select(GroupMember).where(
+                    GroupMember.user_id == uid,
+                    GroupMember.is_primary == True,
+                    GroupMember.group_id != group.id,
+                )
+            )
+        ).scalar_one_or_none()
+        has_primary = primary_gm is not None
+
+    if not has_primary and member.group_id and member.group_id != group.id:
+        has_primary = True
+
+    is_primary = not has_primary
+
+    # 1. Update Member
+    if is_primary:
+        member.membership_number = num
+        member.group_id = group.id
+
+    # 2. Update MemberGroupMembership
+    if existing_mgm:
+        existing_mgm.membership_number = num
+        if is_primary:
+            existing_mgm.priority = 1
+    else:
+        highest_p = (
+            await session.execute(
+                select(func.max(MemberGroupMembership.priority)).where(
+                    MemberGroupMembership.member_id == member.id
+                )
+            )
+        ).scalar_one_or_none()
+        next_p = (highest_p or 0) + 1
+        existing_mgm = MemberGroupMembership(
+            member=member,
+            group=group,
+            priority=1 if is_primary else next_p,
+            membership_number=num,
+            joined_at=datetime.now(UTC),
+        )
+        session.add(existing_mgm)
+
+    # 3. Update GroupMember
+    if uid:
+        if existing_gm:
+            existing_gm.membership_number = num
+            existing_gm.is_primary = is_primary
+        else:
+            session.add(
+                GroupMember(
+                    user_id=uid,
+                    group_id=group.id,
+                    membership_number=num,
+                    is_primary=is_primary,
+                    status="APPROVED",
+                    role="MEMBER",
+                    joined_at=datetime.now(UTC),
+                )
+            )
+
     try:
         await session.flush()
     except IntegrityError as exc:

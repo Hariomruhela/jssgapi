@@ -9,7 +9,7 @@ from pydantic import AliasChoices, BaseModel, BeforeValidator, ConfigDict, Field
 from app.core.constants import MemberStatus
 from app.schemas.family import FamilyMemberOut
 from app.schemas.professional import ProfessionalInfoOut
-from app.schemas.profile import ProfileOut, ProfileUpdate
+from app.schemas.profile import ProfileGroupItem, ProfileOut, ProfileUpdate
 from app.schemas.user import UserOut
 
 
@@ -193,6 +193,7 @@ class MemberGroupMembershipOut(BaseModel):
     group_id: UUID
     group_name: str | None = None
     group_code: str | None = None
+    membership_number: str | None = None
     priority: int
     is_primary: bool
     joined_at: datetime | None = None
@@ -204,11 +205,12 @@ class MemberOut(BaseModel):
     id: UUID
     member_id: UUID | None = None
     user_id: UUID | None = None
-    group_id: UUID | None = None
+    group_id: str | UUID | None = None
     # The linked group's name (``group_id`` -> ``social_groups.name``), so a
     # client can render the group without a second request. Distinct from the
     # free-text ``social_group_name`` profile field the sheet import fills in.
     group_name: str | None = None
+    groups: list[ProfileGroupItem] = []
     group_memberships: list[MemberGroupMembershipOut] = []
     location_id: UUID | None = None
     first_name: str

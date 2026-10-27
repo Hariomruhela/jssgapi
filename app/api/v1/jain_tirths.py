@@ -20,7 +20,7 @@ from app.core.scope import (
     get_access_scope,
     resolve_managed_group,
 )
-from app.dependencies import CurrentUser, DBSession, require_permission
+from app.dependencies import CurrentUser, DBSession, get_current_user, require_permission
 from app.models.jain_tirth import JainTirth
 from app.models.user import User
 from app.repositories.jain_tirth_repository import JainTirthRepository
@@ -41,6 +41,7 @@ from app.services.jain_tirth_service import JainTirthService
 
 router = APIRouter(prefix="/jain-tirths", tags=["Jain Tirths"])
 
+AUTHENTICATED = Depends(get_current_user)
 READ = Depends(require_permission(Permission.JAIN_TIRTH_READ))
 CREATE = Depends(require_permission(Permission.JAIN_TIRTH_CREATE))
 UPDATE = Depends(require_permission(Permission.JAIN_TIRTH_UPDATE))
@@ -75,26 +76,7 @@ def _role_of(user: User) -> RoleName | None:
 async def _read_scope(
     db: DBSession, current_user: User, group_id: UUID | None
 ) -> ReadScope:
-    scope = await get_access_scope(db, current_user)
-    role = _role_of(current_user)
-
-    if scope.unrestricted:
-        return ReadScope(group_id=group_id)
-
-    if role is RoleName.GROUP_ADMIN:
-        if group_id is not None and group_id != scope.group_id:
-            raise ForbiddenException("Operation is limited to your own group")
-        return ReadScope(group_id=scope.group_id, include_ungrouped=False)
-
-    if group_id is not None and group_id != scope.group_id:
-        raise ForbiddenException("Operation is limited to your own group")
-    if scope.group_id is None:
-        return ReadScope(ungrouped_only=True, public_only=True)
-    return ReadScope(
-        group_id=scope.group_id,
-        include_ungrouped=False,
-        public_only=True,
-    )
+    return ReadScope(group_id=group_id)
 
 
 def _tirth_out(tirth: JainTirth, image_count: int = 0) -> JainTirthOut:
@@ -121,7 +103,7 @@ async def _get_visible_tirth(
         return tirth
 
     if role is RoleName.GROUP_ADMIN:
-        if tirth.group_id != scope.group_id:
+        if tirth.group_id is not None and tirth.group_id != scope.group_id:
             raise NotFoundException("Jain Tirth", str(tirth_id))
         return tirth
 
@@ -135,7 +117,7 @@ async def _get_visible_tirth(
     return tirth
 
 
-@router.get("", dependencies=[READ])
+@router.get("", dependencies=[AUTHENTICATED])
 async def list_jain_tirths(
     db: DBSession,
     current_user: CurrentUser,
@@ -321,11 +303,11 @@ async def delete_jain_tirth_cover(
     return ok("Jain Tirth cover image deleted successfully", _tirth_out(tirth))
 
 
-@router.get("/{tirth_id}/images", dependencies=[READ])
+@router.get("/{tirth_id}/images", dependencies=[AUTHENTICATED])
 async def list_jain_tirth_images(
     tirth_id: UUID, db: DBSession, current_user: CurrentUser
 ):
-    tirth = await _get_visible_tirth(db, current_user, tirth_id)
+    tirth = await _get_tirth_or_404(db, tirth_id)
     images = await JainTirthImageService(db).list_images(tirth)
     return ok(
         "Jain Tirth images fetched successfully",

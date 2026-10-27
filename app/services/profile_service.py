@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,8 +12,9 @@ from app.core.constants import AuditAction
 from app.core.exceptions import ProfileNotFoundException
 from app.models.family import FamilyMember
 from app.models.member import Member
+from app.models.member_group import MemberGroupMembership
 from app.models.professional import ProfessionalInformation
-from app.schemas.profile import ProfileOut
+from app.schemas.profile import ProfileGroupItem, ProfileOut
 from app.services.audit_service import AuditService
 from app.services.media_service import MediaService
 
@@ -158,8 +159,16 @@ class ProfileService:
                 selectinload(Member.location),
                 selectinload(Member.family_members),
                 selectinload(Member.professional_info),
+                selectinload(Member.group_memberships).selectinload(
+                    MemberGroupMembership.group
+                ),
             )
-            .where(Member.user_id == user_id, Member.is_deleted.is_(False))
+            .where(
+                (Member.user_id == user_id) | (Member.id == user_id),
+                Member.is_deleted.is_(False),
+            )
+            .order_by(case((Member.user_id == user_id, 1), else_=2))
+            .limit(1)
         )
         return result.scalar_one_or_none()
 
@@ -262,8 +271,75 @@ class ProfileService:
                     break
         return values
 
+    def get_member_groups_info(
+        self, member: Member
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        groups: list[dict[str, Any]] = []
+        primary_info: dict[str, Any] = {}
+
+        memberships = getattr(member, "group_memberships", None) or []
+        sorted_memberships = sorted(memberships, key=lambda item: item.priority)
+
+        for m in sorted_memberships:
+            grp = m.group
+            if grp is not None and getattr(grp, "is_deleted", False):
+                continue
+            gid = (grp.group_id if grp and grp.group_id else None) or str(m.group_id)
+            gname = (grp.name if grp else None) or m.group_name or ""
+            mnum = m.membership_number or (member.membership_number if m.is_primary else None)
+            item = {
+                "group_id": gid,
+                "group_name": gname,
+                "membership_number": mnum,
+                "is_primary": m.is_primary,
+            }
+            groups.append(item)
+            if m.is_primary and not primary_info:
+                primary_info = {
+                    "group_id": gid,
+                    "group_name": gname,
+                    "membership_number": mnum,
+                }
+
+        if not groups and member.group and not getattr(member.group, "is_deleted", False):
+            gid = member.group.group_id or str(member.group.id)
+            gname = member.group.name
+            mnum = member.membership_number
+            groups.append({
+                "group_id": gid,
+                "group_name": gname,
+                "membership_number": mnum,
+                "is_primary": True,
+            })
+            primary_info = {
+                "group_id": gid,
+                "group_name": gname,
+                "membership_number": mnum,
+            }
+
+        if groups and not primary_info:
+            primary_info = {
+                "group_id": groups[0]["group_id"],
+                "group_name": groups[0]["group_name"],
+                "membership_number": groups[0]["membership_number"],
+            }
+
+        if not primary_info.get("membership_number") and member.membership_number:
+            primary_info["membership_number"] = member.membership_number
+
+        return groups, primary_info
+
     def _build_profile(self, member: Member) -> ProfileOut:
         values = self.get_profile_dict(member)
+        groups, primary_info = self.get_member_groups_info(member)
+        values["groups"] = groups
+        if primary_info.get("group_id"):
+            values["group_id"] = primary_info["group_id"]
+        if primary_info.get("group_name"):
+            values["group_name"] = primary_info["group_name"]
+            values["social_group_name"] = primary_info["group_name"]
+        if primary_info.get("membership_number"):
+            values["membership_number"] = primary_info["membership_number"]
         return ProfileOut(**values)
 
     def _fallback_values(self, member: Member) -> dict[str, str | None]:

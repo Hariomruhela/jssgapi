@@ -23,6 +23,104 @@ DELHI_RTO_OVERRIDES: dict[int, str] = {
 }
 
 
+STATE_NAME_TO_CODE: dict[str, str] = {
+    "madhya pradesh": "MP",
+    "rajasthan": "RJ",
+    "gujarat": "GJ",
+    "maharashtra": "MH",
+    "delhi": "DL",
+    "uttar pradesh": "UP",
+    "bihar": "BR",
+    "punjab": "PB",
+    "haryana": "HR",
+    "karnataka": "KA",
+    "tamil nadu": "TN",
+    "west bengal": "WB",
+    "andhra pradesh": "AP",
+    "telangana": "TS",
+    "kerala": "KL",
+    "odisha": "OD",
+    "assam": "AS",
+    "chhattisgarh": "CG",
+    "jharkhand": "JH",
+    "uttarakhand": "UK",
+    "himachal pradesh": "HP",
+    "goa": "GA",
+}
+
+STATE_DISTRICT_RTO_MAP: dict[tuple[str, str], tuple[str, str]] = {
+    # Madhya Pradesh (MP)
+    ("madhya pradesh", "indore"): ("MP", "09"),
+    ("madhya pradesh", "bhopal"): ("MP", "04"),
+    ("madhya pradesh", "ujjain"): ("MP", "13"),
+    ("madhya pradesh", "gwalior"): ("MP", "07"),
+    ("madhya pradesh", "jabalpur"): ("MP", "20"),
+    ("madhya pradesh", "ratlam"): ("MP", "43"),
+    ("madhya pradesh", "khandwa"): ("MP", "12"),
+    ("madhya pradesh", "khargone"): ("MP", "10"),
+    ("madhya pradesh", "dhar"): ("MP", "11"),
+    ("madhya pradesh", "dewas"): ("MP", "41"),
+    ("mp", "indore"): ("MP", "09"),
+    ("mp", "bhopal"): ("MP", "04"),
+    ("mp", "ujjain"): ("MP", "13"),
+    ("mp", "gwalior"): ("MP", "07"),
+    ("mp", "jabalpur"): ("MP", "20"),
+    ("mp", "ratlam"): ("MP", "43"),
+    ("mp", "khandwa"): ("MP", "12"),
+    ("mp", "khargone"): ("MP", "10"),
+    ("mp", "dhar"): ("MP", "11"),
+    ("mp", "dewas"): ("MP", "41"),
+    # Rajasthan (RJ)
+    ("rajasthan", "jaipur"): ("RJ", "14"),
+    ("rajasthan", "jodhpur"): ("RJ", "19"),
+    ("rajasthan", "udaipur"): ("RJ", "27"),
+    ("rj", "jaipur"): ("RJ", "14"),
+    ("rj", "jodhpur"): ("RJ", "19"),
+    ("rj", "udaipur"): ("RJ", "27"),
+    # Gujarat (GJ)
+    ("gujarat", "ahmedabad"): ("GJ", "01"),
+    ("gujarat", "surat"): ("GJ", "05"),
+    ("gj", "ahmedabad"): ("GJ", "01"),
+    ("gj", "surat"): ("GJ", "05"),
+    # Maharashtra (MH)
+    ("maharashtra", "mumbai"): ("MH", "01"),
+    ("maharashtra", "pune"): ("MH", "12"),
+    ("mh", "mumbai"): ("MH", "01"),
+    ("mh", "pune"): ("MH", "12"),
+}
+
+
+def get_state_district_code(state: str, city: str) -> tuple[str, str]:
+    """Map (state, city) into (state_code, rto_code).
+
+    Fallback: Extract 2-letter uppercase state initials + default '01'.
+    """
+    state_norm = state.strip().lower()
+    city_norm = city.strip().lower()
+    key = (state_norm, city_norm)
+    if key in STATE_DISTRICT_RTO_MAP:
+        return STATE_DISTRICT_RTO_MAP[key]
+
+    state_code = STATE_NAME_TO_CODE.get(state_norm)
+    if not state_code:
+        if len(state_norm) == 2 and state_norm.isalpha():
+            state_code = state_norm.upper()
+        else:
+            words = state_norm.split()
+            if len(words) >= 2:
+                state_code = (words[0][0] + words[1][0]).upper()
+            elif len(state_norm) >= 2:
+                state_code = state_norm[:2].upper()
+            else:
+                state_code = "MP"
+
+    rto = rto_code_for_city(state_code, city)
+    if rto:
+        return state_code, rto.zfill(2)
+
+    return state_code, "01"
+
+
 def rto_code_for_city(
     state_code: str,
     city_name: str,

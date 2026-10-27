@@ -26,7 +26,7 @@ from app.core.scope import (
 )
 from app.core.security import hash_password
 from app.dependencies import CurrentUser, DBSession, OptionalUser, require_permission
-from app.models.group import SocialGroup
+from app.models.group import GroupMemberCounter, SocialGroup
 from app.models.member import Member
 from app.models.user import Role, User
 from app.repositories.group_repository import GroupRepository
@@ -305,6 +305,8 @@ async def create_group(body: SocialGroupCreate, db: DBSession):
     try:
         values["group_id"] = await next_group_id(db, city)
         group = await repo.create(**values)
+        db.add(GroupMemberCounter(group_uuid=group.id, last_member_seq=0))
+        await db.flush()
         if body.admin_name is not None:
             assert body.admin_phone_number is not None
             await _assign_default_group_admin(
@@ -397,7 +399,7 @@ async def list_group_members(
     items = list(result.scalars().all())
     return paginated(
         "Group members fetched successfully",
-        [_group_member_out(m) for m in items],
+        [_group_member_out(m, group_id=group_id) for m in items],
         {
             "page": page,
             "page_size": page_size,
@@ -407,7 +409,9 @@ async def list_group_members(
     )
 
 
-def _group_member_out(member: Member) -> GroupMemberOut:
+def _group_member_out(
+    member: Member, group_id: UUID | None = None
+) -> GroupMemberOut:
     """``full_name`` lives in ``profile_data`` for user-less members, so fall back."""
     full_name = (member.profile_data or {}).get("full_name")
     if not full_name and member.user is not None:
@@ -418,6 +422,22 @@ def _group_member_out(member: Member) -> GroupMemberOut:
             for part in (member.first_name, member.middle_name, member.last_name)
             if part
         )
+    membership_number = member.membership_number
+    is_primary = True
+    if group_id is not None:
+        memberships_list = getattr(member, "group_memberships", None) or []
+        matching = next(
+            (m for m in memberships_list if m.group_id == group_id),
+            None,
+        )
+        if matching:
+            membership_number = matching.membership_number or (
+                member.membership_number if matching.is_primary else None
+            )
+            is_primary = matching.is_primary
+        else:
+            is_primary = (member.group_id == group_id)
+
     return GroupMemberOut(
         id=member.id,
         member_id=member.id,
@@ -427,13 +447,17 @@ def _group_member_out(member: Member) -> GroupMemberOut:
         last_name=member.last_name,
         phone_number=member.contact_phone,
         email=member.contact_email,
-        membership_number=member.membership_number,
+        membership_number=membership_number,
+        is_primary=is_primary,
         membership_status=member.membership_status,
         status=member.membership_status,
         group_id=member.group_id,
         group_ids=[
             row.group_id
-            for row in sorted(member.group_memberships, key=lambda item: item.priority)
+            for row in sorted(
+                getattr(member, "group_memberships", None) or [],
+                key=lambda item: item.priority,
+            )
         ],
         contact_email=member.contact_email,
         contact_phone=member.contact_phone,
@@ -590,7 +614,7 @@ async def add_group_member(
 
     _, was_added = await memberships.add_membership(db, member, group)
     if not was_added:
-        return ok("Member is already in this group", _group_member_out(member))
+        return ok("Member is already in this group", _group_member_out(member, group_id=group_id))
     await db.refresh(member)
     await AuditService(db).log(
         AuditAction.GROUP_UPDATE,
@@ -598,7 +622,7 @@ async def add_group_member(
         entity_id=member.id,
         details={"group_id": str(group_id), "action": "member_added"},
     )
-    return created("Member added to group", _group_member_out(member))
+    return created("Member added to group", _group_member_out(member, group_id=group_id))
 
 
 @router.delete("/{group_id}/members/{member_id}", dependencies=[MANAGE_MEMBERS])

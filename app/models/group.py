@@ -107,3 +107,32 @@ class MemberIdCounter(Base):
 
     def __repr__(self) -> str:
         return f"<MemberIdCounter {self.group_id}={self.last_value}>"
+
+
+class DistrictGroupCounter(Base):
+    """Counter table for Groups per District (Prevents collision on delete/recreate)."""
+
+    __tablename__ = "district_group_counters"
+
+    state_code: Mapped[str] = mapped_column(String(2), primary_key=True)
+    district_code: Mapped[str] = mapped_column(String(2), primary_key=True)
+    last_group_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    def __repr__(self) -> str:
+        return f"<DistrictGroupCounter {self.state_code}{self.district_code}={self.last_group_seq}>"
+
+
+class GroupMemberCounter(Base):
+    """Counter table for Members per Group."""
+
+    __tablename__ = "group_member_counters"
+
+    group_uuid: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("social_groups.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    last_member_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    def __repr__(self) -> str:
+        return f"<GroupMemberCounter {self.group_uuid}={self.last_member_seq}>"

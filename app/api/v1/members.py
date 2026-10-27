@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from app.core.constants import AuditAction, MemberStatus
 from app.core.exceptions import (
@@ -68,6 +68,8 @@ def _member_out(member: Member) -> MemberOut:
     if group is not None and group.is_deleted:
         group = None
     out.group_name = group.name if group else None
+    if group and group.group_id:
+        out.group_id = group.group_id
     out.member_id = member.id
     out.status = member.membership_status
     return out
@@ -83,6 +85,15 @@ def _member_list_item(member: Member, profiles: ProfileService) -> MemberListIte
         merged["phone_number"] = member.contact_phone
     if not merged.get("email"):
         merged["email"] = member.contact_email
+    groups, primary_info = profiles.get_member_groups_info(member)
+    merged["groups"] = groups
+    if primary_info.get("group_id"):
+        merged["group_id"] = primary_info["group_id"]
+    if primary_info.get("group_name"):
+        merged["group_name"] = primary_info["group_name"]
+        merged["social_group_name"] = primary_info["group_name"]
+    if primary_info.get("membership_number"):
+        merged["membership_number"] = primary_info["membership_number"]
     return MemberListItemOut(**merged)
 
 
@@ -107,16 +118,20 @@ async def _reload_member(db: DBSession, member_id: UUID) -> Member:
     return result.scalar_one()
 
 
-async def _get_member(db: DBSession, member_id: UUID) -> Member | None:
+async def _get_member(db: DBSession, identifier: UUID) -> Member | None:
     """Load a member that exists and has not been deleted, relations included.
 
-    A deleted member must look like a missing one to every read, so the flag is
-    checked here rather than in each handler.
+    Supports lookup by either Member.id or Member.user_id.
     """
     result = await db.execute(
         select(Member)
         .options(*MEMBER_PROFILE_LOADS)
-        .where(Member.id == member_id, Member.is_deleted.is_(False))
+        .where(
+            (Member.id == identifier) | (Member.user_id == identifier),
+            Member.is_deleted.is_(False),
+        )
+        .order_by(case((Member.id == identifier, 1), else_=2))
+        .limit(1)
     )
     return result.scalar_one_or_none()
 
@@ -344,6 +359,8 @@ async def get_member(member_id: UUID, db: DBSession, current_user: CurrentUser):
         # A member outside the caller's group must look like a missing record, not
         # a forbidden one: a 403 would confirm the id exists.
         if scope.member_id is not None and member.id == scope.member_id:
+            pass
+        elif current_user.id is not None and member.user_id == current_user.id:
             pass
         elif scope.group_id is None or not await member_in_group(
             db, member, scope.group_id

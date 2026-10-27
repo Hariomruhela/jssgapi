@@ -179,6 +179,7 @@ class GroupMemberOut(BaseModel):
     phone_number: str | None = None
     email: str | None = None
     membership_number: str | None = None
+    is_primary: bool = False
     membership_status: str
     status: str | None = None
     group_id: UUID | None = None

@@ -11,13 +11,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenException
 from app.models.group import SocialGroup
 from app.models.member import Member
-from app.models.member_group import MemberGroupMembership
+from app.models.member_group import GroupMember, MemberGroupMembership
 from app.services.group_id_service import assign_member_id
 
 
@@ -82,6 +82,8 @@ async def add_membership(
     if row is not None:
         if not member.group_id:
             member.group_id = row.group_id
+        if not row.membership_number and group.group_id:
+            await assign_member_id(db, member, group)
         return row, False
 
     highest = await db.execute(
@@ -108,6 +110,8 @@ async def add_membership(
             member.membership_number = None
     else:
         await db.flush()
+        if group.group_id:
+            await assign_member_id(db, member, group)
     return row, True
 
 
@@ -137,6 +141,13 @@ async def remove_membership(
 
     was_primary = row.priority == 1
     await db.delete(row)
+    if member.user_id:
+        await db.execute(
+            delete(GroupMember).where(
+                GroupMember.user_id == member.user_id,
+                GroupMember.group_id == group_id,
+            )
+        )
     await db.flush()
 
     if not was_primary:
