@@ -466,6 +466,40 @@ def _group_member_out(
     )
 
 
+@router.get("/{group_id}/admins", dependencies=[READ])
+async def list_group_admins(
+    group_id: UUID,
+    db: DBSession,
+    current_user: CurrentUser,
+):
+    """List all administrators for a specific social group.
+
+    Only accounts whose actual role is exactly GROUP_ADMIN are returned.
+    """
+    group = await GroupRepository(db).get_by_id(group_id)
+    if group is None:
+        raise NotFoundException("Group", str(group_id))
+    scope = await get_access_scope(db, current_user)
+    if not scope.unrestricted and scope.group_id != group_id:
+        raise NotFoundException("Group", str(group_id))
+
+    stmt = (
+        select(User)
+        .join(Role, Role.id == User.role_id)
+        .where(
+            User.group_id == group_id,
+            User.is_deleted.is_(False),
+            func.upper(func.trim(Role.name)) == RoleName.GROUP_ADMIN.value,
+        )
+        .order_by(User.full_name)
+    )
+    admins = (await db.execute(stmt)).scalars().all()
+    return ok(
+        "Group admins fetched successfully",
+        [GroupAdminOut.model_validate(a) for a in admins],
+    )
+
+
 @router.post("/{group_id}/admins", dependencies=[ASSIGN_ADMIN])
 async def assign_group_admin(group_id: UUID, body: GroupAdminAssignment, db: DBSession):
     """Grant a login account administration of this group.

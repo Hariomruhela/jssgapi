@@ -3,9 +3,9 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, and_, func, select
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 
 from app.models.base import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
 
@@ -15,6 +15,19 @@ if TYPE_CHECKING:
     from app.models.member_group import MemberGroupMembership
     from app.models.trustee import Trustee
     from app.models.user import User
+
+
+def _admin_join_condition():
+    from app.models.user import Role, User
+
+    return and_(
+        SocialGroup.id == foreign(User.group_id),
+        User.is_deleted.is_(False),
+        User.role_id
+        == select(Role.id)
+        .where(func.upper(func.trim(Role.name)) == "GROUP_ADMIN")
+        .scalar_subquery(),
+    )
 
 
 class SocialGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
@@ -54,7 +67,12 @@ class SocialGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin):
     trustees: Mapped[list[Trustee]] = relationship(back_populates="group")
     # Login accounts assigned to administer this group. Only GROUP_ADMIN users
     # belong here; `User.group_id` points back at this row.
-    admins: Mapped[list[User]] = relationship(back_populates="group", lazy="selectin")
+    admins: Mapped[list[User]] = relationship(
+        "User",
+        primaryjoin=_admin_join_condition,
+        viewonly=True,
+        lazy="selectin",
+    )
 
     def __repr__(self) -> str:
         return f"<SocialGroup {self.name}>"
