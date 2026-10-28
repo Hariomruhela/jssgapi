@@ -9,14 +9,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.constants import AuditAction
-from app.core.exceptions import ProfileNotFoundException
+from app.core.exceptions import (
+    AlreadyExistsException,
+    ProfileNotFoundException,
+    ValidationException,
+)
 from app.models.family import FamilyMember
 from app.models.member import Member
 from app.models.member_group import MemberGroupMembership
 from app.models.professional import ProfessionalInformation
+from app.models.user import User
 from app.schemas.profile import ProfileGroupItem, ProfileOut
 from app.services.audit_service import AuditService
 from app.services.media_service import MediaService
+from app.utils.validators import normalize_phone_number
 
 PROFILE_FIELDS = (
     "full_name",
@@ -129,12 +135,21 @@ def _normalize_values(values: dict[str, Any]) -> dict[str, str | None]:
 
 
 def _parse_date(value: str | None) -> date | None:
-    if value is None:
+    if not value or not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
         return None
     try:
-        return date.fromisoformat(value)
+        return date.fromisoformat(cleaned)
     except ValueError:
-        return None
+        pass
+    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def _set_string_value(
@@ -186,6 +201,79 @@ class ProfileService:
         member = await self._get_member(user_id)
         if member is None:
             raise ProfileNotFoundException()
+
+        user = member.user
+        if user is None and member.user_id:
+            user = await self.session.get(User, member.user_id)
+        if user is None:
+            user = await self.session.get(User, user_id)
+
+        if "phone_number" in values:
+            raw_phone = values["phone_number"]
+            if raw_phone is not None and str(raw_phone).strip():
+                try:
+                    normalized_phone = normalize_phone_number(str(raw_phone))
+                except ValidationException:
+                    normalized_phone = None
+
+                if normalized_phone:
+                    local_phone = normalized_phone.removeprefix("+91")
+
+                    stmt = select(User).where(
+                        User.is_deleted.is_(False),
+                        (User.phone_number == normalized_phone)
+                        | (User.phone_number == local_phone),
+                    )
+                    if user is not None:
+                        stmt = stmt.where(User.id != user.id)
+                    elif member.user_id is not None:
+                        stmt = stmt.where(User.id != member.user_id)
+                    else:
+                        stmt = stmt.where(User.id != user_id)
+
+                    existing = (await self.session.execute(stmt)).scalar_one_or_none()
+                    if existing is not None:
+                        raise AlreadyExistsException(
+                            "An account with this phone number already exists"
+                        )
+
+                    if user is not None:
+                        if user.phone_number not in (normalized_phone, local_phone):
+                            user.phone_number = normalized_phone
+                            user.firebase_uid = None
+                elif len(str(raw_phone)) <= 20 and user is not None:
+                    raise ValidationException("Invalid Indian phone number")
+            elif raw_phone is not None and not str(raw_phone).strip():
+                if user is not None:
+                    raise ValidationException("Phone number cannot be empty")
+
+        if "email" in values:
+            raw_email = values["email"]
+            if raw_email is not None and str(raw_email).strip():
+                clean_email = str(raw_email).strip().lower()
+                if len(clean_email) <= 255:
+                    stmt = select(User).where(
+                        User.is_deleted.is_(False),
+                        User.email == clean_email,
+                    )
+                    if user is not None:
+                        stmt = stmt.where(User.id != user.id)
+                    elif member.user_id is not None:
+                        stmt = stmt.where(User.id != member.user_id)
+                    else:
+                        stmt = stmt.where(User.id != user_id)
+
+                    existing_email = (
+                        await self.session.execute(stmt)
+                    ).scalar_one_or_none()
+                    if existing_email is not None:
+                        raise AlreadyExistsException(
+                            "An account with this email already exists"
+                        )
+                    if user is not None:
+                        user.email = clean_email
+            elif user is not None:
+                user.email = None
 
         await self.apply_values(member, values)
         await self.audit.log(
@@ -489,6 +577,43 @@ class ProfileService:
                         value,
                         20 if attribute == "contact_phone" else 255,
                     )
+
+        extra_children = (
+            ("son", "unmarried_son2"),
+            ("son", "unmarried_son3"),
+            ("daughter", "unmarried_daughter2"),
+            ("daughter", "unmarried_daughter3"),
+        )
+        for rel_type, prefix in extra_children:
+            child_name = values.get(f"{prefix}_details")
+            if not child_name or len(child_name) > 255:
+                continue
+            target = next(
+                (
+                    f
+                    for f in member.family_members
+                    if f.relationship_type.strip().casefold() == rel_type
+                    and f.name.strip().casefold() == child_name.strip().casefold()
+                ),
+                None,
+            )
+            if target is None:
+                target = FamilyMember(
+                    member_id=member.id,
+                    name=child_name,
+                    relationship_type=rel_type,
+                )
+                self.session.add(target)
+                member.family_members.append(target)
+
+            child_dob = values.get(f"{prefix}_dob")
+            if child_dob:
+                parsed_dob = _parse_date(child_dob)
+                if parsed_dob is not None:
+                    target.date_of_birth = parsed_dob
+            child_occ = values.get(f"{prefix}_occupation")
+            if child_occ:
+                _set_string_value(target, "occupation", child_occ, 255)
 
     async def _sync_professional_fields(
         self, member: Member, values: dict[str, str | None]

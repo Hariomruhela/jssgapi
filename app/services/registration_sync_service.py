@@ -123,146 +123,282 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "family member count",
     ),
     "son_name": (
+        "unmarried son 1 details",
+        "unmarried son1 details",
         "unmarried son details",
+        "unmarried son 1",
+        "unmarried son1",
         "unmarried son",
+        "son 1 details",
+        "son1 details",
+        "son 1 name",
+        "son1 name",
         "son details",
         "son name",
     ),
     "son_dob": (
+        "dob of unmarried son 1",
+        "dob of unmarried son1",
         "dob of unmarried son",
+        "unmarried son 1 dob",
+        "unmarried son1 dob",
         "unmarried son dob",
+        "son 1 date of birth",
+        "son1 date of birth",
+        "dob of son 1",
+        "dob of son1",
         "dob of son",
+        "son 1 dob",
+        "son1 dob",
         "son dob",
     ),
     "son_education": (
+        "unmarried son 1 educational qualification",
+        "unmarried son1 educational qualification",
         "unmarried son educational qualification",
+        "unmarried son 1 education",
+        "unmarried son1 education",
+        "unmarried son education",
+        "son 1 educational qualification",
+        "son1 educational qualification",
         "son educational qualification",
+        "son 1 education",
+        "son1 education",
+        "son education",
     ),
     "son_occupation": (
+        "unmarried son 1 occupation profession",
+        "unmarried son1 occupation profession",
         "unmarried son occupation profession",
+        "unmarried son 1 occupation",
+        "unmarried son1 occupation",
         "unmarried son occupation",
+        "son 1 occupation profession",
+        "son1 occupation profession",
         "son occupation profession",
+        "son 1 occupation",
+        "son1 occupation",
         "son occupation",
     ),
     # The form grew a second and third unmarried son/daughter; the first one
     # keeps the short legacy field name, these keep their own.
     "unmarried_son2_details": (
         "unmarried son 2 details",
+        "unmarried son2 details",
         "unmarried son 2",
+        "unmarried son2",
         "son 2 details",
+        "son2 details",
         "son 2 name",
+        "son2 name",
     ),
     "unmarried_son2_dob": (
         "dob of unmarried son 2",
+        "dob of unmarried son2",
         "unmarried son 2 dob",
+        "unmarried son2 dob",
         "son 2 date of birth",
+        "son2 date of birth",
         "son 2 dob",
+        "son2 dob",
     ),
     "unmarried_son2_education": (
         "unmarried son 2 educational qualification",
+        "unmarried son2 educational qualification",
         "unmarried son 2 education",
+        "unmarried son2 education",
         "son 2 educational qualification",
+        "son2 educational qualification",
         "son 2 education",
+        "son2 education",
     ),
     "unmarried_son2_occupation": (
         "unmarried son 2 occupation profession",
+        "unmarried son2 occupation profession",
         "unmarried son 2 occupation",
+        "unmarried son2 occupation",
         "son 2 occupation profession",
+        "son2 occupation profession",
         "son 2 occupation",
+        "son2 occupation",
     ),
     "unmarried_son3_details": (
         "unmarried son 3 details",
+        "unmarried son3 details",
         "unmarried son 3",
+        "unmarried son3",
         "son 3 details",
+        "son3 details",
         "son 3 name",
+        "son3 name",
     ),
     "unmarried_son3_dob": (
         "dob of unmarried son 3",
+        "dob of unmarried son3",
         "unmarried son 3 dob",
+        "unmarried son3 dob",
         "son 3 date of birth",
+        "son3 date of birth",
         "son 3 dob",
+        "son3 dob",
     ),
     "unmarried_son3_education": (
         "unmarried son 3 educational qualification",
+        "unmarried son3 educational qualification",
         "unmarried son 3 education",
+        "unmarried son3 education",
         "son 3 educational qualification",
+        "son3 educational qualification",
         "son 3 education",
+        "son3 education",
     ),
     "unmarried_son3_occupation": (
         "unmarried son 3 occupation profession",
+        "unmarried son3 occupation profession",
         "unmarried son 3 occupation",
+        "unmarried son3 occupation",
         "son 3 occupation profession",
+        "son3 occupation profession",
         "son 3 occupation",
+        "son3 occupation",
     ),
     "daughter_name": (
+        "unmarried daughter 1 details",
+        "unmarried daughter1 details",
         "unmarried daughter details",
+        "unmarried daughter 1",
+        "unmarried daughter1",
         "unmarried daughter",
+        "daughter 1 details",
+        "daughter1 details",
+        "daughter 1 name",
+        "daughter1 name",
         "daughter details",
         "daughter name",
     ),
     "daughter_dob": (
+        "dob of unmarried daughter 1",
+        "dob of unmarried daughter1",
         "dob of unmarried daughter",
+        "unmarried daughter 1 dob",
+        "unmarried daughter1 dob",
         "unmarried daughter dob",
+        "daughter 1 date of birth",
+        "daughter1 date of birth",
+        "dob of daughter 1",
+        "dob of daughter1",
         "dob of daughter",
+        "daughter 1 dob",
+        "daughter1 dob",
         "daughter dob",
     ),
     "daughter_education": (
+        "unmarried daughter 1 educational qualification",
+        "unmarried daughter1 educational qualification",
         "unmarried daughter educational qualification",
+        "unmarried daughter 1 education",
+        "unmarried daughter1 education",
+        "unmarried daughter education",
+        "daughter 1 educational qualification",
+        "daughter1 educational qualification",
         "daughter educational qualification",
+        "daughter 1 education",
+        "daughter1 education",
+        "daughter education",
     ),
     "daughter_occupation": (
+        "unmarried daughter 1 occupation profession",
+        "unmarried daughter1 occupation profession",
         "unmarried daughter occupation profession",
+        "unmarried daughter 1 occupation",
+        "unmarried daughter1 occupation",
         "unmarried daughter occupation",
+        "daughter 1 occupation profession",
+        "daughter1 occupation profession",
         "daughter occupation profession",
+        "daughter 1 occupation",
+        "daughter1 occupation",
         "daughter occupation",
     ),
     "unmarried_daughter2_details": (
         "unmarried daughter 2 details",
+        "unmarried daughter2 details",
         "unmarried daughter 2",
+        "unmarried daughter2",
         "daughter 2 details",
+        "daughter2 details",
         "daughter 2 name",
+        "daughter2 name",
     ),
     "unmarried_daughter2_dob": (
         "dob of unmarried daughter 2",
+        "dob of unmarried daughter2",
         "unmarried daughter 2 dob",
+        "unmarried daughter2 dob",
         "daughter 2 date of birth",
+        "daughter2 date of birth",
         "daughter 2 dob",
+        "daughter2 dob",
     ),
     "unmarried_daughter2_education": (
         "unmarried daughter 2 educational qualification",
+        "unmarried daughter2 educational qualification",
         "unmarried daughter 2 education",
+        "unmarried daughter2 education",
         "daughter 2 educational qualification",
+        "daughter2 educational qualification",
         "daughter 2 education",
+        "daughter2 education",
     ),
     "unmarried_daughter2_occupation": (
         "unmarried daughter 2 occupation profession",
+        "unmarried daughter2 occupation profession",
         "unmarried daughter 2 occupation",
+        "unmarried daughter2 occupation",
         "daughter 2 occupation profession",
+        "daughter2 occupation profession",
         "daughter 2 occupation",
+        "daughter2 occupation",
     ),
     "unmarried_daughter3_details": (
         "unmarried daughter 3 details",
+        "unmarried daughter3 details",
         "unmarried daughter 3",
+        "unmarried daughter3",
         "daughter 3 details",
+        "daughter3 details",
         "daughter 3 name",
+        "daughter3 name",
     ),
     "unmarried_daughter3_dob": (
         "dob of unmarried daughter 3",
+        "dob of unmarried daughter3",
         "unmarried daughter 3 dob",
+        "unmarried daughter3 dob",
         "daughter 3 date of birth",
+        "daughter3 date of birth",
         "daughter 3 dob",
+        "daughter3 dob",
     ),
     "unmarried_daughter3_education": (
         "unmarried daughter 3 educational qualification",
+        "unmarried daughter3 educational qualification",
         "unmarried daughter 3 education",
+        "unmarried daughter3 education",
         "daughter 3 educational qualification",
+        "daughter3 educational qualification",
         "daughter 3 education",
+        "daughter3 education",
     ),
     "unmarried_daughter3_occupation": (
         "unmarried daughter 3 occupation profession",
+        "unmarried daughter3 occupation profession",
         "unmarried daughter 3 occupation",
+        "unmarried daughter3 occupation",
         "daughter 3 occupation profession",
+        "daughter3 occupation profession",
         "daughter 3 occupation",
+        "daughter3 occupation",
     ),
     "business_address": (
         "business address",
@@ -1293,13 +1429,34 @@ class RegistrationSyncService:
         stored value alone", never "clear it". Identity is never touched - the
         match was made on ``users.phone_number``.
         """
-        await self.profiles.apply_values(member, self._profile_values(row))
+        profile_values = self._profile_values(row)
+
+        # Photo protection: do not overwrite photos if member or spouse already has one
+        existing_profile = member.profile_data or {}
+        has_member_photo = bool(
+            member.profile_photo_url
+            or getattr(member, "profile_photo_r2_url", None)
+            or existing_profile.get("member_photo_link")
+        )
+        has_spouse_photo = bool(
+            getattr(member, "spouse_photo_r2_url", None)
+            or existing_profile.get("spouse_photo_link")
+        )
+
+        if has_member_photo:
+            profile_values.pop("member_photo_link", None)
+        if has_spouse_photo:
+            profile_values.pop("spouse_photo_link", None)
+
+        await self.profiles.apply_values(member, profile_values)
 
         assignments = {
             column: value
             for column, value in self._member_columns(row).items()
             if value
         }
+        if has_member_photo:
+            assignments.pop("profile_photo_url", None)
         if assignments:
             assignments["updated_by"] = current_user_id
             assignments["id"] = member.id

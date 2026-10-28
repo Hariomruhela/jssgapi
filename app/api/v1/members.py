@@ -433,10 +433,7 @@ async def update_member(
     profiles = ProfileService(db)
     return ok(
         "Member updated successfully",
-        MemberListItemOut(
-            **_member_out(member).model_dump(),
-            **profiles.build_profile(member).model_dump(),
-        ),
+        _member_list_item(member, profiles),
     )
 
 

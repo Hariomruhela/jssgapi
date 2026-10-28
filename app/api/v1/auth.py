@@ -184,14 +184,14 @@ async def change_password(
     current_user: CurrentUser,
     db: DBSession,
 ):
-    if body.current_password == body.new_password:
+    if body.current_password and body.current_password == body.new_password:
         raise BadRequestException("New password must differ from the current password")
     await AuthService(db).change_password(
         current_user,
         current_password=body.current_password,
         new_password=body.new_password,
     )
-    return ok("Password changed successfully")
+    return ok("Password updated successfully")
 
 
 @router.post("/forgot-password")

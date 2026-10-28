@@ -3,7 +3,16 @@ from __future__ import annotations
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+from app.core.exceptions import BadRequestException
 
 from app.schemas.user import UserOut
 from app.utils.validators import (
@@ -155,11 +164,24 @@ class LogoutRequest(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str = Field(min_length=8, max_length=128)
+    model_config = ConfigDict(extra="ignore")
+
+    new_password: str = Field(
+        validation_alias=AliasChoices("new_password", "password"),
+        max_length=128,
+    )
+    confirm_password: str | None = None
+    current_password: str | None = None
 
     def model_post_init(self, __context) -> None:
-        validate_password(self.new_password)
+        if len(self.new_password) < 6:
+            raise BadRequestException(
+                "Passwords do not match or minimum length requirement not met"
+            )
+        if self.confirm_password is not None and self.confirm_password != self.new_password:
+            raise BadRequestException(
+                "Passwords do not match or minimum length requirement not met"
+            )
 
 
 class AuthToken(BaseModel):

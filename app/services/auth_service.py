@@ -602,11 +602,12 @@ class AuthService:
         self,
         user: User,
         *,
-        current_password: str,
+        current_password: str | None = None,
         new_password: str,
     ) -> None:
-        if not verify_password(current_password, user.password_hash):
-            raise BadRequestException("Current password is incorrect")
+        if current_password is not None:
+            if not verify_password(current_password, user.password_hash):
+                raise BadRequestException("Current password is incorrect")
         user.password_hash = hash_password(new_password)
         await self.audit.log(
             AuditAction.PASSWORD_CHANGE,

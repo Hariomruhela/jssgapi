@@ -4,7 +4,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, delete, select, update
 from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
@@ -89,7 +89,15 @@ def _cleanup(phones: list[str]) -> None:
     engine = create_engine(_psycopg_url(), poolclass=NullPool)
     try:
         with engine.connect() as connection:
-            user_ids = select(User.id).where(User.phone_number.in_(phones))
+            all_phones = list(phones)
+            for p in phones:
+                cleaned = p.strip().replace(" ", "").replace("-", "")
+                all_phones.append(cleaned)
+                if cleaned.startswith("+91"):
+                    all_phones.append(cleaned[3:])
+                else:
+                    all_phones.append(f"+91{cleaned}")
+            user_ids = select(User.id).where(User.phone_number.in_(all_phones))
             # Media blobs live outside the media row on the Postgres backend,
             # so they have to be purged explicitly.
             object_keys = select(Media.r2_object_key).where(
@@ -99,10 +107,30 @@ def _cleanup(phones: list[str]) -> None:
                 delete(MediaObject).where(MediaObject.object_key.in_(object_keys))
             )
             connection.execute(delete(Media).where(Media.uploaded_by.in_(user_ids)))
-            connection.execute(delete(User).where(User.phone_number.in_(phones)))
+            connection.execute(delete(User).where(User.phone_number.in_(all_phones)))
             connection.commit()
     finally:
         engine.dispose()
+
+
+def _approve_user(phone: str) -> None:
+    engine = create_engine(_psycopg_url(), poolclass=NullPool)
+    with engine.connect() as conn:
+        u = conn.execute(
+            select(User.id).where(
+                (User.phone_number == phone)
+                | (User.phone_number == phone.removeprefix("+91"))
+            )
+        ).scalar_one_or_none()
+        if u:
+            conn.execute(update(User).where(User.id == u).values(is_active=True))
+            conn.execute(
+                update(Member).where(Member.user_id == u).values(
+                    membership_status="APPROVED"
+                )
+            )
+            conn.commit()
+    engine.dispose()
 
 
 def _delete_members(phones: list[str]) -> None:
@@ -128,7 +156,13 @@ def _register(client: TestClient, phone: str) -> str:
         },
     )
     assert response.status_code == 200, response.text
-    return response.json()["tokens"]["access_token"]
+    _approve_user(phone)
+    login_resp = client.post(
+        "/api/v1/auth/login",
+        json={"phone_number": phone, "password": "V3ryStr0ng!Pass"},
+    )
+    assert login_resp.status_code == 200, login_resp.text
+    return login_resp.json()["tokens"]["access_token"]
 
 
 def test_profile_requires_authentication(client: TestClient):
@@ -206,7 +240,7 @@ def test_profile_get_returns_the_complete_shape(client: TestClient):
         }
         assert body["profile"]["full_name"] == "Profile Test User"
     finally:
-        _cleanup([phone])
+        _cleanup([phone, "+91 99999 99999"])
 
 
 def test_profile_update_is_partial_and_preserves_values(client: TestClient):
@@ -247,7 +281,7 @@ def test_profile_update_is_partial_and_preserves_values(client: TestClient):
         assert profile["email"] is None
         assert profile["full_name"] == "Updated Profile User"
     finally:
-        _cleanup([phone])
+        _cleanup([phone, "+91 99999 99999"])
 
 
 def test_profile_update_accepts_all_profile_fields(client: TestClient):
@@ -320,7 +354,7 @@ def test_profile_update_accepts_all_profile_fields(client: TestClient):
         profile = client.get("/api/v1/profile", headers=headers).json()["profile"]
         assert profile == values
     finally:
-        _cleanup([phone])
+        _cleanup([phone, "+91 90000 00002"])
 
 
 def test_profile_accepts_long_values_without_column_overflow(client: TestClient):
@@ -342,7 +376,7 @@ def test_profile_accepts_long_values_without_column_overflow(client: TestClient)
         for field, value in values.items():
             assert profile[field] == value
     finally:
-        _cleanup([phone])
+        _cleanup([phone, "+91 99999 99999"])
 
 
 def test_profile_returns_not_found_without_member(client: TestClient):
@@ -360,7 +394,7 @@ def test_profile_returns_not_found_without_member(client: TestClient):
             "error_code": "PROFILE_NOT_FOUND",
         }
     finally:
-        _cleanup([phone])
+        _cleanup([phone, "+91 99999 99999"])
 
 
 def test_profile_update_returns_not_found_without_member(client: TestClient):
@@ -380,7 +414,7 @@ def test_profile_update_returns_not_found_without_member(client: TestClient):
             "error_code": "PROFILE_NOT_FOUND",
         }
     finally:
-        _cleanup([phone])
+        _cleanup([phone, "+91 99999 99999"])
 
 
 def test_profile_update_ignores_fields_that_are_not_sent(client: TestClient):
@@ -408,7 +442,7 @@ def test_profile_update_ignores_fields_that_are_not_sent(client: TestClient):
         assert profile["spouse_name"] == "Keep spouse"
         assert profile["phone_number"] == "+91 88888 88888"
     finally:
-        _cleanup([phone])
+        _cleanup([phone, "+91 99999 99999"])
 
 
 def test_profile_photo_rejects_invalid_type(client: TestClient):
@@ -426,7 +460,7 @@ def test_profile_photo_rejects_invalid_type(client: TestClient):
             "message": "गलत फोटो फ़ाइल",
         }
     finally:
-        _cleanup([phone])
+        _cleanup([phone, "+91 99999 99999"])
 
 
 def test_profile_photo_uploads_and_updates_profile(
@@ -455,7 +489,7 @@ def test_profile_photo_uploads_and_updates_profile(
         ).json()["profile"]
         assert profile["member_photo_link"] == "https://cdn.example.test/profile-photo.jpg"
     finally:
-        _cleanup([phone])
+        _cleanup([phone, "+91 99999 99999"])
 
 
 def test_profile_photo_sanitizes_long_filenames(
@@ -479,7 +513,7 @@ def test_profile_photo_sanitizes_long_filenames(
             "https://cdn.example.test/long-profile-photo.jpg"
         )
     finally:
-        _cleanup([phone])
+        _cleanup([phone, "+91 99999 99999"])
 
 
 def test_profile_photo_url_actually_serves_the_image(
@@ -523,7 +557,7 @@ def test_profile_photo_url_actually_serves_the_image(
         ).json()["profile"]
         assert profile["member_photo_link"] == photo_link
     finally:
-        _cleanup([phone])
+        _cleanup([phone, "+91 99999 99999"])
 
 
 def test_profile_photo_rejects_files_over_five_megabytes(client: TestClient):
@@ -544,4 +578,72 @@ def test_profile_photo_rejects_files_over_five_megabytes(client: TestClient):
         assert response.status_code == 400
         assert response.json()["message"] == "गलत फोटो फ़ाइल"
     finally:
-        _cleanup([phone])
+        _cleanup([phone, "+91 99999 99999"])
+
+
+def test_profile_update_phone_number_updates_user_and_allows_login(client: TestClient):
+    old_phone = _next_phone()
+    new_phone = _next_phone()
+    try:
+        token = _register(client, old_phone)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Update profile with new phone number
+        resp = client.put(
+            "/api/v1/profile",
+            headers=headers,
+            json={"phone_number": new_phone},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["success"] is True
+
+        # Verify users table in database was updated
+        engine = create_engine(_psycopg_url(), poolclass=NullPool)
+        with engine.connect() as conn:
+            user_phone = conn.execute(
+                select(User.phone_number).where(User.phone_number == new_phone)
+            ).scalar_one_or_none()
+            assert user_phone == new_phone
+
+            old_user_phone = conn.execute(
+                select(User.phone_number).where(User.phone_number == old_phone)
+            ).scalar_one_or_none()
+            assert old_user_phone is None
+        engine.dispose()
+
+        # Login with new phone number succeeds
+        login_new = client.post(
+            "/api/v1/auth/login",
+            json={"phone_number": new_phone, "password": "V3ryStr0ng!Pass"},
+        )
+        assert login_new.status_code == 200, login_new.text
+        assert login_new.json()["user"]["phone_number"] == new_phone
+
+        # Login with old phone number fails
+        login_old = client.post(
+            "/api/v1/auth/login",
+            json={"phone_number": old_phone, "password": "V3ryStr0ng!Pass"},
+        )
+        assert login_old.status_code == 401
+    finally:
+        _cleanup([old_phone, new_phone])
+
+
+def test_profile_update_phone_number_duplicate_conflict(client: TestClient):
+    user1_phone = _next_phone()
+    user2_phone = _next_phone()
+    try:
+        _register(client, user1_phone)
+        token2 = _register(client, user2_phone)
+        headers2 = {"Authorization": f"Bearer {token2}"}
+
+        # User 2 tries to change their phone number to User 1's phone number
+        resp = client.put(
+            "/api/v1/profile",
+            headers=headers2,
+            json={"phone_number": user1_phone},
+        )
+        assert resp.status_code == 409, resp.text
+        assert "already exists" in resp.json()["detail"].lower()
+    finally:
+        _cleanup([user1_phone, user2_phone])

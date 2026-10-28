@@ -809,3 +809,88 @@ def test_query_pending_members_and_approval_workflow(client):
     assert login_ok.json()["tokens"]["access_token"]
 
     _cleanup([email], [phone])
+
+
+def test_change_password_flow(client):
+    phone = _next_phone()
+    email = _next_email()
+    assert _register(client, phone, email=email)["status"] == 200
+    _approve_user(phone)
+
+    login_resp = client.post(
+        "/api/v1/auth/login",
+        json={"phone_number": phone, "password": "V3ryStr0ng!Pass"},
+    )
+    assert login_resp.status_code == 200
+    token = login_resp.json()["tokens"]["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 1. Unauthorized without token
+    unauth = client.post(
+        "/api/v1/auth/change-password",
+        json={"new_password": "myNewPassword@123", "confirm_password": "myNewPassword@123"},
+    )
+    assert unauth.status_code == 401
+
+    # 2. Validation error when passwords mismatch
+    mismatch = client.post(
+        "/api/v1/auth/change-password",
+        headers=headers,
+        json={"new_password": "myNewPassword@123", "confirm_password": "mismatchPassword@123"},
+    )
+    assert mismatch.status_code == 400
+    assert "passwords do not match" in mismatch.json()["message"].lower()
+
+    # 3. Validation error when password < 6 chars
+    too_short = client.post(
+        "/api/v1/auth/change-password",
+        headers=headers,
+        json={"new_password": "12345", "confirm_password": "12345"},
+    )
+    assert too_short.status_code == 400
+
+    # 4. Success using new_password + confirm_password
+    success_resp = client.post(
+        "/api/v1/auth/change-password",
+        headers=headers,
+        json={"new_password": "myNewPassword@123", "confirm_password": "myNewPassword@123"},
+    )
+    assert success_resp.status_code == 200, success_resp.text
+    assert success_resp.json() == {
+        "success": True,
+        "message": "Password updated successfully",
+    }
+
+    # Login with new password works
+    new_login = client.post(
+        "/api/v1/auth/login",
+        json={"phone_number": phone, "password": "myNewPassword@123"},
+    )
+    assert new_login.status_code == 200, new_login.text
+
+    # Login with old password fails
+    old_login = client.post(
+        "/api/v1/auth/login",
+        json={"phone_number": phone, "password": "V3ryStr0ng!Pass"},
+    )
+    assert old_login.status_code == 401
+
+    # 5. Fallback using "password" key instead of "new_password"
+    token2 = new_login.json()["tokens"]["access_token"]
+    headers2 = {"Authorization": f"Bearer {token2}"}
+    fallback_resp = client.post(
+        "/api/v1/auth/change-password",
+        headers=headers2,
+        json={"password": "anotherPassword#999", "confirm_password": "anotherPassword#999"},
+    )
+    assert fallback_resp.status_code == 200, fallback_resp.text
+    assert fallback_resp.json()["success"] is True
+
+    # Login with the fallback password works
+    fallback_login = client.post(
+        "/api/v1/auth/login",
+        json={"phone_number": phone, "password": "anotherPassword#999"},
+    )
+    assert fallback_login.status_code == 200
+
+    _cleanup([email], [phone])
