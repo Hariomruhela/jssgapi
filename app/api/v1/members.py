@@ -74,6 +74,12 @@ def _member_out(member: Member) -> MemberOut:
     out.group_name = group.name if group else None
     if group and group.group_id:
         out.group_id = group.group_id
+    raw_profile_group = (
+        (member.profile_data or {}).get("social_group_association_name")
+        or (member.profile_data or {}).get("social_group_name")
+    )
+    out.social_group_name = out.group_name or raw_profile_group
+    out.social_group_association_name = raw_profile_group or out.group_name
     out.member_id = member.id
     out.status = member.membership_status
     return out
@@ -100,6 +106,15 @@ def _member_list_item(member: Member, profiles: ProfileService) -> MemberListIte
     if primary_info.get("group_name"):
         merged["group_name"] = primary_info["group_name"]
         merged["social_group_name"] = primary_info["group_name"]
+    raw_sheet_group = (
+        (member.profile_data or {}).get("social_group_association_name")
+        or (member.profile_data or {}).get("social_group_name")
+    )
+    merged["social_group_association_name"] = (
+        raw_sheet_group or merged.get("social_group_name") or merged.get("group_name")
+    )
+    if not merged.get("social_group_name"):
+        merged["social_group_name"] = merged["social_group_association_name"]
     if primary_info.get("membership_number"):
         merged["membership_number"] = primary_info["membership_number"]
     return MemberListItemOut(**merged)

@@ -90,6 +90,7 @@ PROFILE_FIELDS = (
     "company_name",
     "group_designation",
     "social_group_name",
+    "social_group_association_name",
     "interest_fields",
     "business_address",
     "business_designation",
@@ -112,6 +113,7 @@ PROFILE_FIELD_PAIRS: tuple[tuple[str, str], ...] = (
     ("unmarried_daughter1_dob", "daughter_dob"),
     ("unmarried_daughter1_education", "daughter_education"),
     ("unmarried_daughter1_occupation", "daughter_occupation"),
+    ("social_group_association_name", "social_group_name"),
 )
 
 
@@ -432,6 +434,7 @@ class ProfileService:
         if primary_info.get("group_name"):
             values["group_name"] = primary_info["group_name"]
             values["social_group_name"] = primary_info["group_name"]
+            values["social_group_association_name"] = primary_info["group_name"]
         if primary_info.get("membership_number"):
             values["membership_number"] = primary_info["membership_number"]
         return ProfileOut(**values)
@@ -482,6 +485,7 @@ class ProfileService:
             "company_name": professional.company_name if professional else None,
             "group_designation": professional.designation if professional else None,
             "social_group_name": group.name if group else None,
+            "social_group_association_name": group.name if group else None,
             "interest_fields": None,
             "business_designation": None,
             "address": member.address_line,

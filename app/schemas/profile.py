@@ -69,6 +69,15 @@ class ProfileUpdate(BaseModel):
     )
     group_designation: str | None = None
     social_group_name: str | None = None
+    social_group_association_name: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "social_group_association_name",
+            "social_group_name",
+            "social_group",
+            "Social Group / Association Name",
+        ),
+    )
     interest_fields: str | None = Field(
         default=None,
         validation_alias=AliasChoices(

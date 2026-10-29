@@ -220,6 +220,8 @@ class MemberOut(BaseModel):
     # client can render the group without a second request. Distinct from the
     # free-text ``social_group_name`` profile field the sheet import fills in.
     group_name: str | None = None
+    social_group_name: str | None = None
+    social_group_association_name: str | None = None
     groups: list[ProfileGroupItem] = []
     group_memberships: list[MemberGroupMembershipOut] = []
     location_id: UUID | None = None

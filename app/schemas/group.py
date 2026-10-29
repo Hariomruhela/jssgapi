@@ -184,6 +184,9 @@ class GroupMemberOut(BaseModel):
     status: str | None = None
     group_id: UUID | None = None
     group_ids: list[UUID] = []
+    group_name: str | None = None
+    social_group_name: str | None = None
+    social_group_association_name: str | None = None
     contact_email: str | None = None
     contact_phone: str | None = None
     profile_photo_url: str | None = None

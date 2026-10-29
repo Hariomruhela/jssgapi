@@ -437,6 +437,11 @@ def _group_member_out(
         else:
             is_primary = (member.group_id == group_id)
 
+    raw_group = (
+        (member.profile_data or {}).get("social_group_association_name")
+        or (member.profile_data or {}).get("social_group_name")
+    )
+    group_name = member.group.name if member.group and not getattr(member.group, "is_deleted", False) else None
     return GroupMemberOut(
         id=member.id,
         member_id=member.id,
@@ -451,6 +456,9 @@ def _group_member_out(
         membership_status=member.membership_status,
         status=member.membership_status,
         group_id=member.group_id,
+        group_name=group_name,
+        social_group_name=group_name or raw_group,
+        social_group_association_name=raw_group or group_name,
         group_ids=[
             row.group_id
             for row in sorted(
