@@ -26,6 +26,7 @@ from app.services.audit_service import AuditService
 from app.services.google_sheets_service import GoogleSheetsService, SheetTable
 from app.services.profile_service import PROFILE_FIELDS, ProfileService
 from app.services.sheet_columns import SheetColumn, plan_sheet_columns
+from app.utils.helpers import format_to_dd_mm_yyyy, parse_any_date
 from app.utils.validators import normalize_phone_number, validate_email
 
 logger = logging.getLogger(__name__)
@@ -655,8 +656,10 @@ class RegistrationSyncService:
         text = raw.strip()
         if not text:
             return None
+        parsed = parse_any_date(text, default_day_first=day_first)
+        if parsed is not None:
+            return parsed
         formats = DAY_FIRST_FORMATS if day_first else MONTH_FIRST_FORMATS
-        parsed: date | None = None
         for fmt in formats:
             try:
                 parsed = datetime.strptime(text, fmt).date()
@@ -668,19 +671,6 @@ class RegistrationSyncService:
                 parsed = date.fromisoformat(text[:10])
             except ValueError:
                 parsed = None
-        if parsed is None:
-            return None
-        ambiguous = AMBIGUOUS_DAY_MONTH.match(text)
-        if ambiguous:
-            first, second = int(ambiguous.group(1)), int(ambiguous.group(2))
-            if first <= 12 and second <= 12 and first != second:
-                logger.info(
-                    "ambiguous %s date on sheet row %s column %s: %s",
-                    "dd/mm" if day_first else "mm/dd",
-                    row_number,
-                    column,
-                    text,
-                )
         return parsed
 
     def _detect_day_first(self, cells: tuple[str, ...], columns: list[str]) -> bool:
@@ -978,7 +968,7 @@ class RegistrationSyncService:
                 values[field_key] = truncate(row.phone, PHONE_MAX)
                 continue
             if field_key in row.dates:
-                values[field_key] = row.dates[field_key].isoformat()
+                values[field_key] = row.dates[field_key].strftime("%d/%m/%Y")
                 continue
             raw = row.values.get(field_key)
             if raw is None:
@@ -988,7 +978,10 @@ class RegistrationSyncService:
                 if field_key in {"address", "business_address", "member_photo_link"}
                 else TEXT_MAX
             )
-            values[field_key] = truncate(raw, limit)
+            if field_key in DATE_FIELDS:
+                values[field_key] = format_to_dd_mm_yyyy(raw)
+            else:
+                values[field_key] = truncate(raw, limit)
         return values
 
     # ------------------------------------------------------------------

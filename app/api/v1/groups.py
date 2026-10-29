@@ -331,8 +331,7 @@ async def create_group(body: SocialGroupCreate, db: DBSession):
             ) from exc
         if "phone_number" in str(exc):
             raise ConflictException(
-                "An account with this phone number already exists; retry "
-                "the request."
+                "This phone number is already registered."
             ) from exc
         raise
     except Exception:

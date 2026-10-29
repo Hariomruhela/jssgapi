@@ -70,7 +70,7 @@ class AuthService:
         normalized = normalize_phone_number(phone)
         if await self.users.get_by_phone(normalized):
             raise AlreadyExistsException(
-                "An account with this phone number already exists"
+                "This phone number is already registered."
             )
 
         req_id = await msg91_send_otp(normalized)
@@ -107,11 +107,11 @@ class AuthService:
         existing = await self.users.get_by_phone(verified_phone)
         if existing is not None:
             raise AlreadyExistsException(
-                "An account with this phone number already exists"
+                "This phone number is already registered."
             )
 
         if email and await self.users.get_by_email(email):
-            raise AlreadyExistsException("An account with this email already exists")
+            raise AlreadyExistsException("This email is already registered.")
 
         role_row = await self._resolve_registration_role(None)
         if role_row is None:

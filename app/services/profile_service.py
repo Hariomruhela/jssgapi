@@ -22,7 +22,24 @@ from app.models.user import User
 from app.schemas.profile import ProfileGroupItem, ProfileOut
 from app.services.audit_service import AuditService
 from app.services.media_service import MediaService
+from app.utils.helpers import format_to_dd_mm_yyyy, parse_any_date
 from app.utils.validators import normalize_phone_number
+
+DATE_PROFILE_FIELDS = frozenset(
+    {
+        "member_dob",
+        "spouse_dob",
+        "anniversary_date",
+        "son_dob",
+        "daughter_dob",
+        "unmarried_son1_dob",
+        "unmarried_son2_dob",
+        "unmarried_son3_dob",
+        "unmarried_daughter1_dob",
+        "unmarried_daughter2_dob",
+        "unmarried_daughter3_dob",
+    }
+)
 
 PROFILE_FIELDS = (
     "full_name",
@@ -135,21 +152,7 @@ def _normalize_values(values: dict[str, Any]) -> dict[str, str | None]:
 
 
 def _parse_date(value: str | None) -> date | None:
-    if not value or not isinstance(value, str):
-        return None
-    cleaned = value.strip()
-    if not cleaned:
-        return None
-    try:
-        return date.fromisoformat(cleaned)
-    except ValueError:
-        pass
-    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(cleaned, fmt).date()
-        except ValueError:
-            continue
-    return None
+    return parse_any_date(value)
 
 
 def _set_string_value(
@@ -234,7 +237,7 @@ class ProfileService:
                     existing = (await self.session.execute(stmt)).scalar_one_or_none()
                     if existing is not None:
                         raise AlreadyExistsException(
-                            "An account with this phone number already exists"
+                            "This phone number is already registered."
                         )
 
                     if user is not None:
@@ -268,7 +271,7 @@ class ProfileService:
                     ).scalar_one_or_none()
                     if existing_email is not None:
                         raise AlreadyExistsException(
-                            "An account with this email already exists"
+                            "This email is already registered."
                         )
                     if user is not None:
                         user.email = clean_email
@@ -357,6 +360,9 @@ class ProfileService:
                     values[canonical] = stored
                     values[legacy] = stored
                     break
+        for date_field in DATE_PROFILE_FIELDS:
+            if values.get(date_field):
+                values[date_field] = format_to_dd_mm_yyyy(values[date_field])
         return values
 
     def get_member_groups_info(
@@ -453,22 +459,22 @@ class ProfileService:
 
         return {
             "full_name": _as_string(full_name),
-            "member_dob": _as_string(member.date_of_birth),
+            "member_dob": format_to_dd_mm_yyyy(member.date_of_birth),
             "member_photo_link": member.profile_photo_url,
             "spouse_name": spouse.name if spouse else None,
             "spouse_mobile": spouse.contact_phone if spouse else None,
-            "spouse_dob": _as_string(spouse.date_of_birth) if spouse else None,
+            "spouse_dob": format_to_dd_mm_yyyy(spouse.date_of_birth) if spouse else None,
             "spouse_photo_link": None,
             "spouse_education": None,
             "spouse_occupation": spouse.occupation if spouse else None,
             "anniversary_date": None,
             "family_member_count": str(len(member.family_members)),
             "son_name": son.name if son else None,
-            "son_dob": _as_string(son.date_of_birth) if son else None,
+            "son_dob": format_to_dd_mm_yyyy(son.date_of_birth) if son else None,
             "son_education": None,
             "son_occupation": son.occupation if son else None,
             "daughter_name": daughter.name if daughter else None,
-            "daughter_dob": _as_string(daughter.date_of_birth) if daughter else None,
+            "daughter_dob": format_to_dd_mm_yyyy(daughter.date_of_birth) if daughter else None,
             "daughter_education": None,
             "daughter_occupation": daughter.occupation if daughter else None,
             "member_education": None,

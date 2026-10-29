@@ -201,7 +201,8 @@ def test_register_duplicate_phone_is_rejected(client):
     assert second["status"] == 409
     assert second["body"] == {
         "success": False,
-        "message": "An account with this phone number already exists",
+        "message": "This phone number is already registered.",
+        "detail": "This phone number is already registered.",
         "error_code": "ALREADY_EXISTS",
     }
     _cleanup([], [phone])

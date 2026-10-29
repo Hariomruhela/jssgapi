@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import date
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
+
+from app.utils.helpers import format_to_dd_mm_yyyy
 
 
 class CelebrationPersonOut(BaseModel):
@@ -17,7 +18,12 @@ class CelebrationPersonOut(BaseModel):
     id: UUID | None = None
     full_name: str | None = None
     photo_url: str | None = None
-    date_of_birth: date | None = None
+    date_of_birth: str | None = None
+
+    @field_validator("date_of_birth", mode="before")
+    @classmethod
+    def _format_dob(cls, v: Any) -> str | None:
+        return format_to_dd_mm_yyyy(v)
 
 
 class CelebrationLocationOut(BaseModel):
@@ -37,22 +43,32 @@ class BirthdayOut(BaseModel):
     """
 
     occasion: Literal["member_birthday", "spouse_birthday"]
-    date: date
+    date: str
     member: CelebrationPersonOut
     spouse: CelebrationPersonOut | None = None
     group_id: UUID | None = None
     group_name: str | None = None
     location: CelebrationLocationOut | None = None
+
+    @field_validator("date", mode="before")
+    @classmethod
+    def _format_date(cls, v: Any) -> str:
+        return format_to_dd_mm_yyyy(v) or str(v)
 
 
 class AnniversaryOut(BaseModel):
     """One wedding anniversary happening today."""
 
     occasion: Literal["anniversary"] = "anniversary"
-    date: date
+    date: str
     years: int | None = None
     member: CelebrationPersonOut
     spouse: CelebrationPersonOut | None = None
     group_id: UUID | None = None
     group_name: str | None = None
     location: CelebrationLocationOut | None = None
+
+    @field_validator("date", mode="before")
+    @classmethod
+    def _format_date(cls, v: Any) -> str:
+        return format_to_dd_mm_yyyy(v) or str(v)

@@ -6,14 +6,16 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from sqlalchemy import case, func, select
 
-from app.core.constants import AuditAction, MemberStatus
+from app.core.constants import AuditAction, MemberStatus, RoleName
 from app.core.exceptions import (
+    AlreadyExistsException,
     BadRequestException,
     ForbiddenException,
     NotFoundException,
 )
 from app.core.permissions import Permission
 from app.core.responses import created, ok, paginated
+from app.core.security import hash_password
 from app.core.scope import (
     assert_member_access,
     get_access_scope,
@@ -24,8 +26,10 @@ from app.dependencies import CurrentUser, DBSession, require_permission
 from app.models.group import SocialGroup
 from app.models.member import Member
 from app.models.member_group import MemberGroupMembership
-from app.models.user import User
+from app.models.user import Role, User
+from app.repositories.user_repository import UserRepository
 from app.services.group_id_service import assign_member_id
+from app.utils.validators import normalize_phone_number, validate_password
 from app.repositories.member_repository import (
     MEMBER_PROFILE_LOADS,
     MemberRepository,
@@ -79,6 +83,10 @@ def _member_list_item(member: Member, profiles: ProfileService) -> MemberListIte
     out_dict = _member_out(member).model_dump()
     prof_dict = profiles.get_profile_dict(member)
     merged = {**out_dict, **prof_dict}
+    if not merged.get("date_of_birth") and merged.get("member_dob"):
+        merged["date_of_birth"] = merged["member_dob"]
+    elif not merged.get("member_dob") and merged.get("date_of_birth"):
+        merged["member_dob"] = merged["date_of_birth"]
     merged["member_id"] = member.id
     merged["status"] = member.membership_status
     if not merged.get("phone_number"):
@@ -257,9 +265,40 @@ async def create_member(body: MemberCreate, current_user: CurrentUser, db: DBSes
     repo = MemberRepository(db)
     # Only enforced when the admin links an account; imported community members
     # legitimately have no User at all.
-    if body.user_id is not None and await repo.get_by_user_id(body.user_id):
-        raise BadRequestException("A member profile already exists for this user")
+    if body.user_id is not None:
+        if await repo.get_by_user_id(body.user_id):
+            raise BadRequestException("A member profile already exists for this user")
+        if body.password and body.password.strip():
+            validate_password(body.password.strip())
+            user = await db.get(User, body.user_id)
+            if user:
+                user.password_hash = hash_password(body.password.strip())
+    elif body.password and body.password.strip():
+        validate_password(body.password.strip())
+        norm_phone = normalize_phone_number(body.phone_number)
+        user_repo = UserRepository(db)
+        user = await user_repo.get_by_phone(norm_phone)
+        if user is None and body.contact_email:
+            user = await user_repo.get_by_email(body.contact_email.strip().lower())
+        if user is None:
+            role_res = await db.execute(
+                select(Role).where(Role.name == RoleName.MEMBER.value)
+            )
+            member_role = role_res.scalar_one_or_none()
+            user = await user_repo.create(
+                email=body.contact_email.strip().lower() if body.contact_email else None,
+                full_name=body.full_name.strip(),
+                phone_number=norm_phone,
+                password_hash=hash_password(body.password.strip()),
+                is_active=True,
+                role_id=member_role.id if member_role else None,
+            )
+        else:
+            user.password_hash = hash_password(body.password.strip())
+        body.user_id = user.id
     data = body.member_columns()
+    if body.user_id is not None:
+        data["user_id"] = body.user_id
     first_name, last_name = _split_full_name(body.full_name)
     data["first_name"] = data.get("first_name") or first_name
     data["last_name"] = data.get("last_name") or last_name
@@ -392,6 +431,92 @@ async def update_member(
     scope = await get_admin_scope(db, current_user)
     if group_selection_sent and not requested_group_ids:
         raise BadRequestException("A member must belong to at least one group")
+
+    # If a new password is provided, validate and hash it; if empty/omitted, leave unchanged
+    new_password_hash: str | None = None
+    if body.password is not None and body.password.strip():
+        validate_password(body.password.strip())
+        new_password_hash = hash_password(body.password.strip())
+
+    # Keep member login phone number updated when edited
+    sent_phone = (
+        body.phone_number
+        if "phone_number" in body.model_fields_set
+        else (body.contact_phone if "contact_phone" in body.model_fields_set else None)
+    )
+    norm_phone = normalize_phone_number(sent_phone.strip()) if sent_phone and sent_phone.strip() else None
+    if norm_phone:
+        columns["contact_phone"] = norm_phone
+
+    sent_email = (
+        (body.contact_email or getattr(body, "email", None) or "").strip().lower()
+        if ("contact_email" in body.model_fields_set or "email" in body.model_fields_set)
+        else None
+    )
+    sent_name = body.full_name.strip() if "full_name" in body.model_fields_set and body.full_name else None
+
+    if member.user_id is not None:
+        user = await db.get(User, member.user_id)
+        if user:
+            if norm_phone and user.phone_number != norm_phone:
+                phone_owner = await UserRepository(db).get_by_phone(norm_phone)
+                if phone_owner and phone_owner.id != user.id:
+                    raise AlreadyExistsException("This phone number is already registered.")
+                user.phone_number = norm_phone
+            if sent_email and user.email != sent_email:
+                email_owner = await UserRepository(db).get_by_email(sent_email)
+                if email_owner and email_owner.id != user.id:
+                    raise AlreadyExistsException("This email is already registered.")
+                user.email = sent_email
+            if sent_name:
+                user.full_name = sent_name
+            if new_password_hash:
+                user.password_hash = new_password_hash
+                await AuditService(db).log(
+                    AuditAction.PASSWORD_CHANGE,
+                    user_id=current_user.id,
+                    entity_type="user",
+                    entity_id=user.id,
+                    details={"reset_by": str(current_user.id), "source": "member_update"},
+                )
+    else:
+        phone_candidate = (
+            norm_phone
+            or (normalize_phone_number(member.contact_phone) if member.contact_phone else None)
+            or (
+                normalize_phone_number(member.profile_data.get("phone_number"))
+                if (member.profile_data or {}).get("phone_number")
+                else None
+            )
+        )
+        if phone_candidate:
+            user_repo = UserRepository(db)
+            user = await user_repo.get_by_phone(phone_candidate)
+            if user is None and sent_email:
+                user = await user_repo.get_by_email(sent_email)
+            if user:
+                if new_password_hash:
+                    user.password_hash = new_password_hash
+                if norm_phone and user.phone_number != norm_phone:
+                    user.phone_number = norm_phone
+                if sent_email and user.email != sent_email:
+                    user.email = sent_email
+                member.user_id = user.id
+            elif new_password_hash:
+                role_res = await db.execute(
+                    select(Role).where(Role.name == RoleName.MEMBER.value)
+                )
+                member_role = role_res.scalar_one_or_none()
+                user = await user_repo.create(
+                    email=sent_email or member.contact_email or (member.profile_data or {}).get("email"),
+                    full_name=sent_name or getattr(member, "full_name", None) or f"{member.first_name} {member.last_name}".strip() or "Member",
+                    phone_number=phone_candidate,
+                    password_hash=new_password_hash,
+                    is_active=True,
+                    role_id=member_role.id if member_role else None,
+                )
+                member.user_id = user.id
+
     member = await repo.update(member, **columns)
     if group_selection_sent:
         await memberships.sync_memberships(

@@ -4,13 +4,21 @@ from datetime import date, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    field_validator,
+)
 
 from app.core.constants import MemberStatus
 from app.schemas.family import FamilyMemberOut
 from app.schemas.professional import ProfessionalInfoOut
 from app.schemas.profile import ProfileGroupItem, ProfileOut, ProfileUpdate
 from app.schemas.user import UserOut
+from app.utils.helpers import format_to_dd_mm_yyyy
 
 
 def _parse_date_of_birth(value: Any) -> date | None:
@@ -76,6 +84,7 @@ class MemberCreate(ProfileUpdate):
     address_line: str | None = None
     occupation_summary: str | None = None
     membership_number: str | None = None
+    password: str | None = None
 
     full_name: str = Field(min_length=1)
     phone_number: str = Field(
@@ -91,7 +100,7 @@ class MemberCreate(ProfileUpdate):
         column it did not mention.
         """
         return self.model_dump(
-            exclude=set(ProfileUpdate.model_fields) | {"group_ids"},
+            exclude=set(ProfileUpdate.model_fields) | {"group_ids", "password"},
             exclude_none=True,
         )
 
@@ -147,6 +156,7 @@ class MemberUpdate(ProfileUpdate):
     address_line: str | None = None
     occupation_summary: str | None = None
     membership_number: str | None = None
+    password: str | None = None
 
     def member_columns(self) -> dict[str, Any]:
         """Only the fields the client actually sent, minus the profile fields.
@@ -156,7 +166,7 @@ class MemberUpdate(ProfileUpdate):
         can only ever set values.
         """
         return self.model_dump(
-            exclude=set(ProfileUpdate.model_fields) | {"group_ids"},
+            exclude=set(ProfileUpdate.model_fields) | {"group_ids", "password"},
             exclude_none=True,
             exclude_unset=True,
         )
@@ -217,8 +227,13 @@ class MemberOut(BaseModel):
     middle_name: str | None = None
     last_name: str
     gender: str | None = None
-    date_of_birth: date | None = None
+    date_of_birth: str | None = None
     blood_group: str | None = None
+
+    @field_validator("date_of_birth", mode="before")
+    @classmethod
+    def _format_dob(cls, v: Any) -> str | None:
+        return format_to_dd_mm_yyyy(v)
     profile_photo_url: str | None = None
     contact_email: str | None = None
     contact_phone: str | None = None

@@ -5,6 +5,7 @@ import os
 from collections.abc import AsyncGenerator
 from urllib.parse import urlsplit
 
+from fastapi import Request
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -62,8 +63,12 @@ async_session_factory = async_sessionmaker(
 )
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
+async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     async with async_session_factory() as session:
+        try:
+            request.state.db = session
+        except Exception:
+            pass
         try:
             yield session
             await session.commit()

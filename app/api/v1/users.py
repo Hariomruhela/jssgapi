@@ -76,15 +76,18 @@ async def list_users(
 @router.post("", dependencies=[MANAGE])
 async def create_user(body: UserCreate, db: DBSession):
     repo = UserRepository(db)
-    if await repo.get_by_email(body.email):
-        raise AlreadyExistsException("User with this email already exists")
+    if body.email and await repo.get_by_email(body.email.strip().lower()):
+        raise AlreadyExistsException("This email is already registered.")
+    norm_phone = (
+        normalize_phone_number(body.phone_number) if body.phone_number else None
+    )
+    if norm_phone and await repo.get_by_phone(norm_phone):
+        raise AlreadyExistsException("This phone number is already registered.")
     role = await _resolve_role(db, body.role_name)
     user = await repo.create(
-        email=body.email,
+        email=body.email.strip().lower() if body.email else None,
         full_name=body.full_name,
-        phone_number=(
-            normalize_phone_number(body.phone_number) if body.phone_number else None
-        ),
+        phone_number=norm_phone,
         password_hash=hash_password(body.password),
         is_active=body.is_active,
         role_id=role.id if role else None,
@@ -121,6 +124,18 @@ async def update_user(user_id: UUID, body: UserUpdate, db: DBSession):
         # group_id bookkeeping a GROUP_ADMIN needs. Silently accepting a role here
         # would let a client demote a Group Admin into an unscoped state.
         raise BadRequestException("Use PATCH /users/{id}/role to change a user's role")
+    if "phone_number" in data and data["phone_number"]:
+        norm_phone = normalize_phone_number(data["phone_number"])
+        existing = await repo.get_by_phone(norm_phone)
+        if existing and existing.id != user.id:
+            raise AlreadyExistsException("This phone number is already registered.")
+        data["phone_number"] = norm_phone
+    if "email" in data and data["email"]:
+        clean_email = data["email"].strip().lower()
+        existing = await repo.get_by_email(clean_email)
+        if existing and existing.id != user.id:
+            raise AlreadyExistsException("This email is already registered.")
+        data["email"] = clean_email
     user = await repo.update(user, **data)
     return ok("User updated successfully", UserOut.model_validate(user))
 

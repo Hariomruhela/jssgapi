@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from typing import Any
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+
+from app.utils.helpers import format_to_dd_mm_yyyy
 
 # Request aliases only: responses always use the canonical field name, so
 # existing clients keep seeing the same keys.
@@ -98,6 +101,24 @@ class ProfileOut(ProfileUpdate):
     group_id: str | None = None
     group_name: str | None = None
     groups: list[ProfileGroupItem] = []
+
+    @field_validator(
+        "member_dob",
+        "spouse_dob",
+        "anniversary_date",
+        "son_dob",
+        "daughter_dob",
+        "unmarried_son1_dob",
+        "unmarried_son2_dob",
+        "unmarried_son3_dob",
+        "unmarried_daughter1_dob",
+        "unmarried_daughter2_dob",
+        "unmarried_daughter3_dob",
+        mode="before",
+    )
+    @classmethod
+    def _standardize_date(cls, v: Any) -> Any:
+        return format_to_dd_mm_yyyy(v)
 
 
 class ProfileResponse(BaseModel):
