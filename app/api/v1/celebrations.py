@@ -9,6 +9,7 @@ from app.core.responses import ok
 from app.core.scope import get_access_scope
 from app.dependencies import CurrentUser, DBSession, require_permission
 from app.services.celebration_service import CelebrationService
+from app.utils.helpers import parse_any_date
 
 router = APIRouter(prefix="/celebrations", tags=["Celebrations"])
 
@@ -19,10 +20,10 @@ READ = Depends(require_permission(Permission.MEMBER_READ))
 async def list_todays_birthdays(
     db: DBSession,
     current_user: CurrentUser,
-    on: date | None = Query(
+    on: str | None = Query(
         default=None,
         alias="date",
-        description="Day to celebrate (YYYY-MM-DD); defaults to today",
+        description="Day to celebrate (DD/MM/YYYY or YYYY-MM-DD); defaults to today",
     ),
 ):
     """Today's birthdays, for the member and their spouse.
@@ -31,7 +32,9 @@ async def list_todays_birthdays(
     member's or the spouse's birthday, plus their group and location. Scope
     follows the member directory: group admins see their own group only.
     """
-    target = on or date.today()
+    target = parse_any_date(on) if on else date.today()
+    if target is None:
+        target = date.today()
     scope = await get_access_scope(db, current_user)
     items = await CelebrationService(db).birthdays(scope, target)
     return ok(
@@ -44,10 +47,10 @@ async def list_todays_birthdays(
 async def list_todays_anniversaries(
     db: DBSession,
     current_user: CurrentUser,
-    on: date | None = Query(
+    on: str | None = Query(
         default=None,
         alias="date",
-        description="Day to celebrate (YYYY-MM-DD); defaults to today",
+        description="Day to celebrate (DD/MM/YYYY or YYYY-MM-DD); defaults to today",
     ),
 ):
     """Today's wedding anniversaries.
@@ -55,7 +58,9 @@ async def list_todays_anniversaries(
     Each item carries the couple (name + photo), how many years they have been
     married, and their group and location.
     """
-    target = on or date.today()
+    target = parse_any_date(on) if on else date.today()
+    if target is None:
+        target = date.today()
     scope = await get_access_scope(db, current_user)
     items = await CelebrationService(db).anniversaries(scope, target)
     return ok(

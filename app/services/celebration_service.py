@@ -36,6 +36,7 @@ from app.schemas.celebration import (
     CelebrationPersonOut,
 )
 from app.services.profile_service import ProfileService
+from app.utils.helpers import parse_any_date
 
 #: Relationship labels a spouse may be stored under (the form is inconsistent).
 SPOUSE_ALIASES = ("spouse", "wife", "husband")
@@ -63,53 +64,26 @@ def clear_celebration_cache() -> None:
 
 
 def _parse_date(value: Any) -> date | None:
-    """A date in any of the spellings the registration data arrives in.
-
-    ``profile_data`` mixes ISO ``YYYY-MM-DD``, the US form ``M/D/YYYY`` written
-    by the English Google Form, and Indian ``DD-MM-YYYY`` cells typed by hand.
-    The separator disambiguates a middle-of-the-road value (``12/01/2000`` is
-    US month-first, ``12-01-2000`` is day-first); a part over 12 settles it
-    outright. Returns ``None`` for a blank/unrecognised value so one bad cell
-    skips that member instead of failing the whole listing.
-    """
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value).strip()
-    if not text:
-        return None
-    text = text.split("T", 1)[0].split(" ", 1)[0]
-    separator = "/" if "/" in text else "." if "." in text else "-"
-    parts = text.replace(".", "-").replace("/", "-").split("-")
-    if len(parts) != 3 or not all(part.isdigit() for part in parts):
-        return None
-    first, second, third = (int(part) for part in parts)
-    if len(parts[0]) == 4:  # YYYY-MM-DD
-        year, month, day = first, second, third
-    elif first > 12:  # unambiguous day-first: DD-MM-YYYY
-        year, month, day = third, second, first
-    elif second > 12:  # unambiguous month-first: M/D/YYYY
-        year, month, day = third, first, second
-    elif separator == "/":  # ambiguous: the English form is month-first
-        year, month, day = third, first, second
-    else:  # ambiguous dash/dot: the Indian form is day-first
-        year, month, day = third, second, first
-    try:
-        return date(year, month, day)
-    except ValueError:
-        return None
+    """A date in any of the spellings the registration data arrives in."""
+    return parse_any_date(value)
 
 
-def _same_day(value: date | None, target: date) -> bool:
+def _same_day(value: Any, target: date) -> bool:
     """Whether ``value`` falls on ``target``'s month/day.
 
     A Feb 29 birthday is matched on Feb 28 in a non-leap year, when that is the
     month's last day, so those members still surface in ordinary years.
     """
     if value is None:
+        return False
+    if isinstance(value, str):
+        parsed = parse_any_date(value)
+        if parsed is None:
+            return False
+        value = parsed
+    elif isinstance(value, datetime):
+        value = value.date()
+    if not hasattr(value, "month") or not hasattr(value, "day"):
         return False
     if value.month == target.month and value.day == target.day:
         return True
@@ -152,7 +126,7 @@ class CelebrationService:
             profile = self.profiles.build_profile(member)
             member_person = _member_person(member, profile)
             spouse_person = _spouse_person(member, profile)
-            member_dob = _parse_date(profile.member_dob) or member.date_of_birth
+            member_dob = parse_any_date(profile.member_dob) or member.date_of_birth
             common = _common_fields(member)
             if _same_day(member_dob, target):
                 items.append(
@@ -164,9 +138,10 @@ class CelebrationService:
                         **common,
                     )
                 )
-            if spouse_person is not None and _same_day(
-                spouse_person.date_of_birth, target
-            ):
+            spouse_dob = parse_any_date(profile.spouse_dob)
+            if spouse_dob is None and spouse_person is not None:
+                spouse_dob = parse_any_date(spouse_person.date_of_birth)
+            if spouse_dob is not None and _same_day(spouse_dob, target):
                 items.append(
                     BirthdayOut(
                         occasion="spouse_birthday",
@@ -200,10 +175,10 @@ class CelebrationService:
         items: list[AnniversaryOut] = []
         for member in members:
             profile = self.profiles.build_profile(member)
-            anniversary = _parse_date(profile.anniversary_date)
+            anniversary = parse_any_date(profile.anniversary_date)
             if not _same_day(anniversary, target):
                 continue
-            years = target.year - anniversary.year if anniversary.year else None
+            years = (target.year - anniversary.year) if (anniversary and anniversary.year) else None
             items.append(
                 AnniversaryOut(
                     date=target,
