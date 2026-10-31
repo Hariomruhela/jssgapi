@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
+from uuid import UUID
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from app.utils.helpers import format_to_dd_mm_yyyy
@@ -103,6 +105,19 @@ class ProfileGroupItem(BaseModel):
     is_primary: bool = False
 
 
+class MemberGroupMembershipOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    group_id: UUID
+    group_name: str | None = None
+    group_code: str | None = None
+    membership_number: str | None = None
+    priority: int
+    is_primary: bool
+    joined_at: datetime | None = None
+
+
 class ProfileOut(ProfileUpdate):
     model_config = ConfigDict(extra="ignore")
 
@@ -110,6 +125,7 @@ class ProfileOut(ProfileUpdate):
     group_id: str | None = None
     group_name: str | None = None
     groups: list[ProfileGroupItem] = []
+    group_memberships: list[MemberGroupMembershipOut] = []
 
     @field_validator(
         "member_dob",
@@ -133,6 +149,7 @@ class ProfileOut(ProfileUpdate):
 class ProfileResponse(BaseModel):
     success: bool = True
     profile: ProfileOut
+    data: ProfileOut | None = None
 
 
 class ProfilePhotoResponse(BaseModel):

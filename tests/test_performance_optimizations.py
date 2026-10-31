@@ -180,3 +180,91 @@ def test_get_profile_dict():
     assert profile_dict["full_name"] == profile_obj.full_name
     assert profile_dict["city"] == profile_obj.city
     assert profile_dict["phone_number"] == profile_obj.phone_number
+
+
+def test_build_profile_includes_groups_and_group_memberships():
+    from app.models.group import SocialGroup
+    from app.models.member_group import MemberGroupMembership
+
+    session = MagicMock()
+    service = ProfileService(session)
+
+    g1_id = uuid.uuid4()
+    g2_id = uuid.uuid4()
+    g1 = SocialGroup(id=g1_id, name="JSSG Professional Unity Indore Testing", group_id="MP0902", is_deleted=False)
+    g2 = SocialGroup(id=g2_id, name="JSSG Professional Unity Indore Testing 1", group_id="MP0903", is_deleted=False)
+
+    m_id = uuid.uuid4()
+    mgm1 = MemberGroupMembership(
+        id=uuid.uuid4(),
+        member_id=m_id,
+        group_id=g1_id,
+        priority=1,
+        membership_number="MP0902013",
+    )
+    mgm1.group = g1
+
+    mgm2 = MemberGroupMembership(
+        id=uuid.uuid4(),
+        member_id=m_id,
+        group_id=g2_id,
+        priority=2,
+        membership_number="MP0903010",
+    )
+    mgm2.group = g2
+
+    member = Member(
+        id=m_id,
+        first_name="Hariom",
+        last_name="ji",
+        contact_phone="+919238332334",
+        contact_email="Hariomruhela@gmail.com",
+        profile_data={
+            "full_name": "Hariom ji",
+            "city": "indore",
+            "address": "indore",
+            "company_name": "Techquitoes",
+            "member_education": "B.tech",
+            "member_occupation": "Coding",
+        },
+    )
+    member.user = None
+    member.group = None
+    member.location = None
+    member.family_members = []
+    member.professional_info = []
+    member.group_memberships = [mgm1, mgm2]
+
+    profile_obj = service.build_profile(member)
+    assert profile_obj.full_name == "Hariom ji"
+    assert profile_obj.group_id == "MP0902"
+    assert profile_obj.group_name == "JSSG Professional Unity Indore Testing"
+    assert profile_obj.membership_number == "MP0902013"
+
+    # Verify groups list
+    assert len(profile_obj.groups) == 2
+    assert profile_obj.groups[0].group_id == "MP0902"
+    assert profile_obj.groups[0].group_name == "JSSG Professional Unity Indore Testing"
+    assert profile_obj.groups[0].membership_number == "MP0902013"
+    assert profile_obj.groups[0].is_primary is True
+
+    assert profile_obj.groups[1].group_id == "MP0903"
+    assert profile_obj.groups[1].group_name == "JSSG Professional Unity Indore Testing 1"
+    assert profile_obj.groups[1].membership_number == "MP0903010"
+    assert profile_obj.groups[1].is_primary is False
+
+    # Verify group_memberships list
+    assert len(profile_obj.group_memberships) == 2
+    assert profile_obj.group_memberships[0].group_id == g1_id
+    assert profile_obj.group_memberships[0].group_name == "JSSG Professional Unity Indore Testing"
+    assert profile_obj.group_memberships[0].group_code == "MP0902"
+    assert profile_obj.group_memberships[0].membership_number == "MP0902013"
+    assert profile_obj.group_memberships[0].priority == 1
+    assert profile_obj.group_memberships[0].is_primary is True
+
+    assert profile_obj.group_memberships[1].group_id == g2_id
+    assert profile_obj.group_memberships[1].group_name == "JSSG Professional Unity Indore Testing 1"
+    assert profile_obj.group_memberships[1].group_code == "MP0903"
+    assert profile_obj.group_memberships[1].membership_number == "MP0903010"
+    assert profile_obj.group_memberships[1].priority == 2
+    assert profile_obj.group_memberships[1].is_primary is False

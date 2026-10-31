@@ -3,6 +3,7 @@ from app.schemas.advertisement import (  # noqa: F401
     AdvertisementCreate,
     AdvertisementOut,
     AdvertisementUpdate,
+    SubscriptionDurationOption,
 )
 from app.schemas.audit import AuditLogOut  # noqa: F401
 from app.schemas.auth import (  # noqa: F401

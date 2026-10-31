@@ -184,6 +184,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[str]] = {
         Permission.NEWS_CREATE,
         Permission.NOTIFICATION_READ,
         Permission.ADVERTISEMENT_READ,
+        Permission.ADVERTISEMENT_CREATE,
         Permission.MEDIA_READ,
         Permission.MEDIA_UPLOAD,
         Permission.PAYMENT_READ,

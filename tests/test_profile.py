@@ -231,14 +231,23 @@ def test_profile_get_returns_the_complete_shape(client: TestClient):
             "business_designation",
             "group_designation",
             "social_group_name",
+            "social_group_association_name",
             "interest_fields",
             "address",
             "city",
             "area",
             "phone_number",
             "email",
+            "membership_number",
+            "group_id",
+            "group_name",
+            "groups",
+            "group_memberships",
         }
         assert body["profile"]["full_name"] == "Profile Test User"
+        assert body["data"] == body["profile"]
+        assert isinstance(body["data"]["groups"], list)
+        assert isinstance(body["data"]["group_memberships"], list)
     finally:
         _cleanup([phone, "+91 99999 99999"])
 

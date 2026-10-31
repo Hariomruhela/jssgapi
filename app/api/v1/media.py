@@ -21,6 +21,7 @@ from app.dependencies import (
     OptionalUser,
     require_permission,
 )
+from app.models.advertisement import Advertisement
 from app.models.event import Event
 from app.models.jain_tirth import JainTirth
 from app.models.media import Media
@@ -136,6 +137,10 @@ async def assert_owner_in_scope(
         owner_group_id = await db.scalar(
             select(JainTirth.group_id).where(JainTirth.id == owner_id)
         )
+    elif owner_type == "advertisement":
+        owner_group_id = await db.scalar(
+            select(Advertisement.group_id).where(Advertisement.id == owner_id)
+        )
     else:
         raise ForbiddenException("This media owner type is not accessible")
 
@@ -200,6 +205,10 @@ async def scope_group_from_owner(
     if owner_type == "jain_tirth":
         return await db.scalar(
             select(JainTirth.group_id).where(JainTirth.id == owner_id)
+        )
+    if owner_type == "advertisement":
+        return await db.scalar(
+            select(Advertisement.group_id).where(Advertisement.id == owner_id)
         )
     return None
 

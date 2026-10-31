@@ -30,7 +30,12 @@ def _safe_photo_filename(filename: str | None) -> str:
 @router.get("", response_model=ProfileResponse)
 async def get_profile(current_user: CurrentUser, db: DBSession):
     profile = await ProfileService(db).get_profile(current_user.id)
-    return {"success": True, "profile": profile.model_dump(mode="json")}
+    profile_dump = profile.model_dump(mode="json")
+    return {
+        "success": True,
+        "profile": profile_dump,
+        "data": profile_dump,
+    }
 
 
 @router.put("")

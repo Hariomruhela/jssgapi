@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import case, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -171,7 +171,7 @@ class ProfileService:
         self.audit = AuditService(session)
 
     async def _get_member(self, user_id: UUID) -> Member | None:
-        result = await self.session.execute(
+        stmt = (
             select(Member)
             .options(
                 selectinload(Member.user),
@@ -190,7 +190,45 @@ class ProfileService:
             .order_by(case((Member.user_id == user_id, 1), else_=2))
             .limit(1)
         )
-        return result.scalar_one_or_none()
+        result = await self.session.execute(stmt)
+        member = result.scalar_one_or_none()
+        if member is not None:
+            return member
+
+        # Fallback: check by user's phone number if member.user_id was not yet linked
+        user = await self.session.get(User, user_id)
+        if user and user.phone_number:
+            normalized = user.phone_number.strip()
+            local = normalized.removeprefix("+91")
+            conds = [Member.contact_phone == normalized]
+            if local != normalized:
+                conds.append(Member.contact_phone == local)
+            phone_stmt = (
+                select(Member)
+                .options(
+                    selectinload(Member.user),
+                    selectinload(Member.group),
+                    selectinload(Member.location),
+                    selectinload(Member.family_members),
+                    selectinload(Member.professional_info),
+                    selectinload(Member.group_memberships).selectinload(
+                        MemberGroupMembership.group
+                    ),
+                )
+                .where(
+                    or_(*conds),
+                    Member.is_deleted.is_(False),
+                )
+                .limit(1)
+            )
+            phone_res = await self.session.execute(phone_stmt)
+            member = phone_res.scalar_one_or_none()
+            if member is not None:
+                if member.user_id is None:
+                    member.user_id = user_id
+                    await self.session.flush()
+                return member
+        return None
 
     async def get_profile(self, user_id: UUID) -> ProfileOut:
         member = await self._get_member(user_id)
@@ -437,6 +475,39 @@ class ProfileService:
             values["social_group_association_name"] = primary_info["group_name"]
         if primary_info.get("membership_number"):
             values["membership_number"] = primary_info["membership_number"]
+
+        memberships = getattr(member, "group_memberships", None) or []
+        sorted_memberships = sorted(memberships, key=lambda item: item.priority)
+        group_memberships: list[dict[str, Any]] = []
+        for m in sorted_memberships:
+            grp = m.group
+            if grp is not None and getattr(grp, "is_deleted", False):
+                continue
+            mnum = m.membership_number or (member.membership_number if m.is_primary else None)
+            group_memberships.append({
+                "id": m.id,
+                "group_id": m.group_id,
+                "group_name": m.group_name,
+                "group_code": m.group_code,
+                "membership_number": mnum,
+                "priority": m.priority,
+                "is_primary": m.is_primary,
+                "joined_at": m.joined_at,
+            })
+
+        if not group_memberships and member.group and not getattr(member.group, "is_deleted", False):
+            group_memberships.append({
+                "id": member.id,
+                "group_id": member.group.id,
+                "group_name": member.group.name,
+                "group_code": member.group.group_id,
+                "membership_number": member.membership_number,
+                "priority": 1,
+                "is_primary": True,
+                "joined_at": member.joined_at,
+            })
+
+        values["group_memberships"] = group_memberships
         return ProfileOut(**values)
 
     def _fallback_values(self, member: Member) -> dict[str, str | None]:

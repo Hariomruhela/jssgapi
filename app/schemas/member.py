@@ -16,7 +16,12 @@ from pydantic import (
 from app.core.constants import MemberStatus
 from app.schemas.family import FamilyMemberOut
 from app.schemas.professional import ProfessionalInfoOut
-from app.schemas.profile import ProfileGroupItem, ProfileOut, ProfileUpdate
+from app.schemas.profile import (
+    MemberGroupMembershipOut,
+    ProfileGroupItem,
+    ProfileOut,
+    ProfileUpdate,
+)
 from app.schemas.user import UserOut
 from app.utils.helpers import format_to_dd_mm_yyyy
 
@@ -194,19 +199,6 @@ class MemberUpdate(ProfileUpdate):
 class MemberApproveRequest(BaseModel):
     status: MemberStatus
     rejection_reason: str | None = None
-
-
-class MemberGroupMembershipOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    group_id: UUID
-    group_name: str | None = None
-    group_code: str | None = None
-    membership_number: str | None = None
-    priority: int
-    is_primary: bool
-    joined_at: datetime | None = None
 
 
 class MemberOut(BaseModel):
